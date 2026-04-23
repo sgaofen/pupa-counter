@@ -5,21 +5,27 @@
 const { app, BrowserWindow, ipcMain, dialog } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const os = require("os");
 const { spawn } = require("child_process");
 
 const DEV = !app.isPackaged;
 
 // --- Local Python pipeline paths (replace with bundled resources when we
 // ship a packaged .dmg / .exe; for dev we just point at the local repo). ---
-const PYTHON_BIN =
-  process.env.PUPA_PYTHON ||
-  "/Users/stephenyu/Documents/pupa_counter_publish/.venv/bin/python";
+// Defaults assume the sister repo `pupa_counter_v6` sits next to this one,
+// with its own `.venv`. Works cross-platform (macOS/Linux uses .venv/bin,
+// Windows uses .venv/Scripts). Override any of these with env vars when
+// the layout differs.
+const IS_WIN = process.platform === "win32";
+const V6_ROOT_DEFAULT = path.resolve(__dirname, "..", "..", "pupa_counter_v6");
+const VENV_PY_DEFAULT = IS_WIN
+  ? path.join(V6_ROOT_DEFAULT, ".venv", "Scripts", "python.exe")
+  : path.join(V6_ROOT_DEFAULT, ".venv", "bin", "python");
+const PYTHON_BIN = process.env.PUPA_PYTHON || VENV_PY_DEFAULT;
 const CNN_SCRIPT =
-  process.env.PUPA_SCRIPT ||
-  "/Users/stephenyu/Documents/pupa_counter_v6/pupa_counter.py";
+  process.env.PUPA_SCRIPT || path.join(V6_ROOT_DEFAULT, "pupa_counter.py");
 const CNN_DAEMON_SCRIPT =
-  process.env.PUPA_DAEMON ||
-  "/Users/stephenyu/Documents/pupa_counter_v6/pupa_counter_daemon.py";
+  process.env.PUPA_DAEMON || path.join(V6_ROOT_DEFAULT, "pupa_counter_daemon.py");
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -97,8 +103,11 @@ ipcMain.handle("file:readImageDataUrl", async (_evt, p) => {
 });
 
 // Expose a built-in demo folder so the user can click "Load demo scan"
-// without picking a file on every launch.
-const DEMO_DIR = "/Users/stephenyu/Downloads/pupate_batch";
+// without picking a file on every launch. Override with PUPA_DEMO_DIR; the
+// default is the user's Downloads/pupate_batch on any platform. If the
+// folder doesn't exist the handler returns [] and the button is silent.
+const DEMO_DIR =
+  process.env.PUPA_DEMO_DIR || path.join(os.homedir(), "Downloads", "pupate_batch");
 ipcMain.handle("file:listDemoScans", async () => {
   try {
     const files = await fs.promises.readdir(DEMO_DIR);
@@ -227,6 +236,65 @@ app.on("before-quit", () => {
     try { cnnWorker.proc.stdin.write(JSON.stringify({ id: 0, cmd: "quit" }) + "\n"); } catch {}
     try { cnnWorker.proc.kill(); } catch {}
   }
+});
+
+// --- Scanner (Windows only for now, via WIA COM through PowerShell) ---
+// The PS scripts in electron/scanner/ shell out to WIA.DeviceManager and
+// print one JSON line on stdout. Any other stdout noise is tolerated — we
+// only parse the last non-empty line.
+const SCANNER_DIR = path.join(__dirname, "scanner");
+const SCAN_OUT_DIR = () => path.join(app.getPath("userData"), "scans");
+
+function runScannerScript(scriptName, args) {
+  if (process.platform !== "win32") {
+    return Promise.reject(new Error("scanner IPC is Windows-only (WIA); macOS/Linux path not yet implemented"));
+  }
+  return new Promise((resolve, reject) => {
+    const scriptPath = path.join(SCANNER_DIR, scriptName);
+    const proc = spawn(
+      "powershell.exe",
+      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath, ...args],
+      { windowsHide: true }
+    );
+    let stdout = "";
+    let stderr = "";
+    proc.stdout.on("data", (d) => { stdout += d.toString(); });
+    proc.stderr.on("data", (d) => { stderr += d.toString(); });
+    proc.on("error", reject);
+    proc.on("close", (code) => {
+      const lastLine = stdout.trim().split(/\r?\n/).filter(Boolean).pop() || "";
+      let parsed;
+      try { parsed = JSON.parse(lastLine); }
+      catch {
+        return reject(new Error(
+          `scanner script ${scriptName} produced no JSON (exit ${code}). stderr: ${stderr || "<empty>"}`
+        ));
+      }
+      if (parsed.ok === false) return reject(new Error(parsed.error || "scanner script failed"));
+      resolve(parsed);
+    });
+  });
+}
+
+ipcMain.handle("scanner:listDevices", async () => {
+  const res = await runScannerScript("wia_list.ps1", []);
+  return res.devices || [];
+});
+
+ipcMain.handle("scanner:scan", async (_evt, params) => {
+  const { deviceId, dpi = 300, mode = "color" } = params || {};
+  if (!deviceId) throw new Error("scanner:scan requires deviceId");
+  const outDir = SCAN_OUT_DIR();
+  await fs.promises.mkdir(outDir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const outPath = path.join(outDir, `scan_${stamp}.png`);
+  const res = await runScannerScript("wia_scan.ps1", [
+    "-DeviceId", deviceId,
+    "-OutPath", outPath,
+    "-Dpi", String(dpi),
+    "-Mode", mode,
+  ]);
+  return res;
 });
 
 app.whenReady().then(createWindow);

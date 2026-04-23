@@ -1,5 +1,9 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Icons } from "../components/icons";
+import type { ScannerDevice } from "../types";
+import { loadScannerSettings, saveScannerSettings } from "../adapters/scannerAdapter";
+
+const DPI_CHOICES = [200, 300, 400, 600];
 
 export function SettingsView({ onToast }: { onToast: (msg: string) => void }) {
   const [gpu, setGpu] = useState<"Auto" | "CPU" | "CUDA" | "MPS">("Auto");
@@ -10,10 +14,63 @@ export function SettingsView({ onToast }: { onToast: (msg: string) => void }) {
     "C:\\Sarah\\PupaCounter\\scans\\"
   );
 
+  const [devices, setDevices] = useState<ScannerDevice[]>([]);
+  const [selectedDevice, setSelectedDevice] = useState<string>("");
+  const [dpi, setDpi] = useState<number>(300);
+  const [mode, setMode] = useState<"color" | "grayscale">("color");
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Load persisted scanner settings once, then probe for devices.
+  useEffect(() => {
+    const saved = loadScannerSettings();
+    if (saved) {
+      setSelectedDevice(saved.deviceId);
+      setDpi(saved.dpi);
+      setMode(saved.mode);
+    }
+    refreshDevices();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const refreshDevices = async () => {
+    if (!window.pupa?.scanner) {
+      onToast("Scanner IPC unavailable (browser preview)");
+      return;
+    }
+    setRefreshing(true);
+    try {
+      const list = await window.pupa.scanner.listDevices();
+      setDevices(list);
+      if (list.length === 0) {
+        onToast("No scanner detected");
+      } else if (!list.find((d) => d.id === selectedDevice)) {
+        // Auto-pick first device if previous selection is gone or none set.
+        setSelectedDevice(list[0].id);
+      }
+    } catch (err) {
+      onToast(`Scanner probe failed: ${(err as Error).message}`);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const testConnection = async () => {
+    setTesting(true);
+    await refreshDevices();
+    setTesting(false);
+  };
+
   const pickDir = async () => {
     const p = await window.pupa?.dialog.openDirectory();
     if (p) setSaveDir(p);
   };
+
+  const handleSave = () => {
+    if (selectedDevice) saveScannerSettings({ deviceId: selectedDevice, dpi, mode });
+    onToast("Settings saved");
+  };
+
+  const scannerConnected = devices.length > 0 && !!selectedDevice;
 
   return (
     <div className="s4-body">
@@ -27,38 +84,84 @@ export function SettingsView({ onToast }: { onToast: (msg: string) => void }) {
           <div className="card-head">
             <div>
               <div className="card-title">Scanner</div>
-              <div className="card-sub" style={{ marginTop: 2 }}>Pending driver integration · TWAIN on Win, ICA on macOS</div>
+              <div className="card-sub" style={{ marginTop: 2 }}>
+                {scannerConnected
+                  ? `WIA driver · ${devices.find((d) => d.id === selectedDevice)?.name ?? ""}`
+                  : "Windows WIA — plug scanner and click Test connection"}
+              </div>
             </div>
-            <span className="pill"><span className="dot" style={{ background: "var(--muted-2)" }} />Disconnected</span>
+            <span className={`pill ${scannerConnected ? "good" : ""}`}>
+              <span
+                className="dot"
+                style={scannerConnected ? undefined : { background: "var(--muted-2)" }}
+              />
+              {scannerConnected ? "Connected" : "Disconnected"}
+            </span>
           </div>
           <div className="body">
             <div className="setting-row">
               <div>
                 <div className="sr-label">Scanner device</div>
-                <div className="sr-hint">Auto-detected devices listed first.</div>
+                <div className="sr-hint">WIA-enumerated devices on this machine.</div>
               </div>
               <div className="sr-control">
-                <select className="select" defaultValue="No scanner connected">
-                  <option>No scanner connected</option>
-                  <option>EPSON Perfection V600 (USB)</option>
-                  <option>Canon CanoScan 9000F</option>
+                <select
+                  className="select"
+                  value={selectedDevice}
+                  onChange={(e) => setSelectedDevice(e.target.value)}
+                  disabled={devices.length === 0}
+                >
+                  {devices.length === 0 && <option value="">No scanner connected</option>}
+                  {devices.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.name}
+                      {d.manufacturer ? ` · ${d.manufacturer}` : ""}
+                    </option>
+                  ))}
                 </select>
-                <button className="btn"
-                  style={{ alignSelf: "flex-start" }}
-                  onClick={() => { setTesting(true); setTimeout(() => { setTesting(false); onToast("No device detected"); }, 900); }}>
-                  {testing ? "…Testing" : "Test connection"}
+                <button className="btn" style={{ alignSelf: "flex-start" }} onClick={testConnection}>
+                  {testing || refreshing ? "…Testing" : "Test connection"}
                 </button>
               </div>
             </div>
-            <div className="setting-row disabled">
+            <div className={`setting-row ${scannerConnected ? "" : "disabled"}`}>
               <div>
                 <div className="sr-label">Scan resolution</div>
-                <div className="sr-hint">Requires a connected scanner.</div>
+                <div className="sr-hint">Model was trained at 300 DPI — keep as default unless you know better.</div>
               </div>
               <div className="sr-control">
-                <select className="select" defaultValue="1200 dpi">
-                  <option>600 dpi</option><option>1200 dpi</option><option>2400 dpi</option>
+                <select
+                  className="select"
+                  value={dpi}
+                  onChange={(e) => setDpi(parseInt(e.target.value, 10))}
+                  disabled={!scannerConnected}
+                >
+                  {DPI_CHOICES.map((n) => (
+                    <option key={n} value={n}>{n} dpi</option>
+                  ))}
                 </select>
+              </div>
+            </div>
+            <div className={`setting-row ${scannerConnected ? "" : "disabled"}`}>
+              <div>
+                <div className="sr-label">Color mode</div>
+                <div className="sr-hint">Color matches the training distribution.</div>
+              </div>
+              <div className="sr-control">
+                <div className="radio-group">
+                  {(["color", "grayscale"] as const).map((x) => (
+                    <label key={x} className={`radio ${mode === x ? "on" : ""}`}>
+                      <input
+                        type="radio"
+                        name="scan-mode"
+                        checked={mode === x}
+                        onChange={() => setMode(x)}
+                        disabled={!scannerConnected}
+                      />
+                      {x === "color" ? "Color" : "Grayscale"}
+                    </label>
+                  ))}
+                </div>
               </div>
             </div>
           </div>
@@ -164,7 +267,7 @@ export function SettingsView({ onToast }: { onToast: (msg: string) => void }) {
 
         <div className="s4-actions">
           <button className="btn">Cancel</button>
-          <button className="btn btn-primary" onClick={() => onToast("Settings saved")}>
+          <button className="btn btn-primary" onClick={handleSave}>
             {Icons.check} Save changes
           </button>
         </div>

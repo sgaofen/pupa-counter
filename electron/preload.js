@@ -17,4 +17,8 @@ contextBridge.exposeInMainWorld("pupa", {
   cnn: {
     detect: (imagePath) => ipcRenderer.invoke("cnn:detect", imagePath),
   },
+  scanner: {
+    listDevices: () => ipcRenderer.invoke("scanner:listDevices"),
+    scan: (params) => ipcRenderer.invoke("scanner:scan", params),
+  },
 });
