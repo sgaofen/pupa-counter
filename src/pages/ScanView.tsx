@@ -32,6 +32,8 @@ export function ScanView({ onNavigate, onToast }: Props) {
   const updatePendingMeta = useSessionStore((s) => s.updatePendingMeta);
   const commitPendingScan = useSessionStore((s) => s.commitPendingScan);
   const startNewRound = useSessionStore((s) => s.startNewRound);
+  const setSessionOperator = useSessionStore((s) => s.setOperator);
+  const setSessionExperiment = useSessionStore((s) => s.setExperiment);
 
   const [processing, setProcessing] = useState(false);
   const [detectionError, setDetectionError] = useState<string | null>(null);
@@ -361,7 +363,10 @@ export function ScanView({ onNavigate, onToast }: Props) {
             <div className="field"><label>Your name</label>
               <input className="input"
                 value={pendingScan?.metadata.operator ?? session.operator}
-                onChange={(e) => updatePendingMeta({ operator: e.target.value })} /></div>
+                onChange={(e) => {
+                  if (pendingScan) updatePendingMeta({ operator: e.target.value });
+                  else setSessionOperator(e.target.value);
+                }} /></div>
             <div className="field"><label>Date & time</label>
               <input className="input mono" readOnly value={new Date().toISOString().slice(0, 16).replace("T", " ")} /></div>
             <div className="field"><label>File path</label>
@@ -371,7 +376,10 @@ export function ScanView({ onNavigate, onToast }: Props) {
             <div className="field"><label>Experiment</label>
               <input className="input"
                 value={pendingScan?.metadata.experiment ?? session.experiment}
-                onChange={(e) => updatePendingMeta({ experiment: e.target.value })} /></div>
+                onChange={(e) => {
+                  if (pendingScan) updatePendingMeta({ experiment: e.target.value });
+                  else setSessionExperiment(e.target.value);
+                }} /></div>
             <div className="field"><label>Image #</label>
               <div style={{ display: "grid", gridTemplateColumns: "72px 1fr", gap: 8, alignItems: "center" }}>
                 <input className="input" value={pendingScan?.imageNumber ?? ""} readOnly style={{ textAlign: "center" }} />
@@ -381,18 +389,22 @@ export function ScanView({ onNavigate, onToast }: Props) {
             <div className="field"><label>Info filename</label>
               <input className="input mono"
                 value={pendingScan?.metadata.infoFilename ?? ""}
-                onChange={(e) => updatePendingMeta({ infoFilename: e.target.value })} /></div>
+                onChange={(e) => updatePendingMeta({ infoFilename: e.target.value })}
+                disabled={!pendingScan}
+                placeholder={pendingScan ? "" : "Load a scan to edit"} /></div>
             <div className="field"><label>Genotype</label>
               <select className="select"
                 value={pendingScan?.metadata.genotype ?? "Cage B"}
-                onChange={(e) => updatePendingMeta({ genotype: e.target.value })}>
+                onChange={(e) => updatePendingMeta({ genotype: e.target.value })}
+                disabled={!pendingScan}>
                 <option>Cage A</option><option>Cage B</option><option>Cage C</option>
                 <option>w1118 control</option><option>Custom…</option>
               </select></div>
             <div className="field"><label>Comments</label>
-              <textarea className="textarea" placeholder="Optional notes…"
+              <textarea className="textarea" placeholder={pendingScan ? "Optional notes…" : "Load a scan to edit"}
                 value={pendingScan?.metadata.comments ?? ""}
-                onChange={(e) => updatePendingMeta({ comments: e.target.value })} /></div>
+                onChange={(e) => updatePendingMeta({ comments: e.target.value })}
+                disabled={!pendingScan} /></div>
           </div>
         </div>
 
