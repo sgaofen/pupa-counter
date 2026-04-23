@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Icons } from "../components/icons";
-import type { ScannerDevice } from "../types";
+import type { ScannerDevice, CnnInfo } from "../types";
 import { loadScannerSettings, saveScannerSettings } from "../adapters/scannerAdapter";
 import { useSessionStore } from "../store/sessionStore";
 
@@ -20,6 +20,8 @@ export function SettingsView({ onToast }: { onToast: (msg: string) => void }) {
   const [dpi, setDpi] = useState<number>(300);
   const [mode, setMode] = useState<"color" | "grayscale">("color");
 
+  const [cnnInfo, setCnnInfo] = useState<CnnInfo | null>(null);
+
   useEffect(() => {
     const saved = loadScannerSettings();
     if (saved) {
@@ -28,6 +30,11 @@ export function SettingsView({ onToast }: { onToast: (msg: string) => void }) {
       setMode(saved.mode);
     }
     refreshDevices();
+    // Fetch CNN backend info — pre-warmed at window boot, so this is
+    // near-instant in the common case.
+    if (window.pupa?.cnn?.info) {
+      window.pupa.cnn.info().then(setCnnInfo).catch(() => setCnnInfo(null));
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -177,8 +184,31 @@ export function SettingsView({ onToast }: { onToast: (msg: string) => void }) {
                 Loaded by the Python daemon at startup · v12 CNN + classifier v5
               </div>
             </div>
+            {cnnInfo && (
+              <span className="pill good">
+                <span className="dot" />Daemon ready
+              </span>
+            )}
           </div>
           <div className="body">
+            <div className="setting-row">
+              <div>
+                <div className="sr-label">Hardware acceleration</div>
+                <div className="sr-hint">
+                  Auto-detected at daemon startup. Install a GPU-capable torch wheel
+                  by running <span className="mono">scripts/setup_venv.py</span> in the{" "}
+                  <span className="mono">pupa_counter_v6</span> repo on each new machine.
+                </div>
+              </div>
+              <div className="sr-control">
+                <input
+                  className="input mono"
+                  readOnly
+                  value={cnnInfo?.deviceName ?? "(daemon still warming up…)"}
+                  style={{ fontSize: 11.5 }}
+                />
+              </div>
+            </div>
             <div className="setting-row">
               <div>
                 <div className="sr-label">Model file</div>
@@ -192,7 +222,11 @@ export function SettingsView({ onToast }: { onToast: (msg: string) => void }) {
                 <input
                   className="input mono"
                   readOnly
-                  value="pupa_counter_v6/model/pupa_counter_v12.pt + peak_filter_clf.pkl"
+                  value={
+                    cnnInfo
+                      ? `${cnnInfo.model}${cnnInfo.classifier ? " + " + cnnInfo.classifier : ""}`
+                      : "pupa_counter_v12.pt + peak_filter_clf.pkl"
+                  }
                   style={{ fontSize: 11.5 }}
                 />
               </div>

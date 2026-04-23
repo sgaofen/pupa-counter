@@ -133,6 +133,7 @@ const cnnWorker = {
   pending: new Map(),    // id -> { resolve, reject }
   stdoutBuf: "",
   stderrBuf: "",
+  info: null,            // captured 'ready' payload: {device, deviceName, model, classifier}
 };
 
 function startCnnWorker() {
@@ -147,7 +148,8 @@ function startCnnWorker() {
 
     const onReady = (msg) => {
       if (msg && msg.ready) {
-        console.log(`[cnn-worker] ready on ${msg.device} · model=${msg.model} · clf=${msg.classifier}`);
+        cnnWorker.info = msg;
+        console.log(`[cnn-worker] ready on ${msg.deviceName || msg.device} · model=${msg.model} · clf=${msg.classifier}`);
         resolve();
       } else {
         // Unexpected: treat as response-before-ready.
@@ -229,6 +231,11 @@ ipcMain.handle("cnn:detect", async (_evt, imagePath) => {
       reject(err);
     }
   });
+});
+
+ipcMain.handle("cnn:info", async () => {
+  await startCnnWorker();
+  return cnnWorker.info;
 });
 
 app.on("before-quit", () => {
