@@ -282,10 +282,19 @@ ipcMain.handle("scanner:listDevices", async () => {
 });
 
 ipcMain.handle("scanner:scan", async (_evt, params) => {
-  const { deviceId, dpi = 300, mode = "color" } = params || {};
+  const { deviceId, dpi = 300, mode = "color", outDir: requestedDir } = params || {};
   if (!deviceId) throw new Error("scanner:scan requires deviceId");
-  const outDir = SCAN_OUT_DIR();
-  await fs.promises.mkdir(outDir, { recursive: true });
+  // User-chosen save dir (from Settings) wins; fall back to userData if
+  // they haven't set one or if we can't write to their chosen spot.
+  const fallback = SCAN_OUT_DIR();
+  let outDir = requestedDir || fallback;
+  try {
+    await fs.promises.mkdir(outDir, { recursive: true });
+  } catch (err) {
+    console.warn(`[scanner] save dir ${outDir} unusable (${err.message}); falling back to ${fallback}`);
+    outDir = fallback;
+    await fs.promises.mkdir(outDir, { recursive: true });
+  }
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const outPath = path.join(outDir, `scan_${stamp}.png`);
   const res = await runScannerScript("wia_scan.ps1", [

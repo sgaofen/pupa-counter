@@ -122,6 +122,7 @@ export interface ScanParams {
   deviceId: string;
   dpi?: number;                       // default 300
   mode?: "color" | "grayscale";       // default "color"
+  outDir?: string;                    // absolute dir; main.js falls back to userData/scans
 }
 
 export interface ScanResult {

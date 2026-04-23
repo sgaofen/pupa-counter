@@ -9,6 +9,9 @@ param(
     [int]$Dpi = 300,
     [ValidateSet("color","grayscale")][string]$Mode = "color"
 )
+# NB: $OutPath is resolved by the Electron main process; it already
+# honors the user's Settings → Default save directory with a
+# userData/scans fallback if that directory is unwritable.
 $ErrorActionPreference = "Stop"
 
 # WIA ImageProcessFilter / FormatID GUIDs
