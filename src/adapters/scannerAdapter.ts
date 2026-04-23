@@ -66,10 +66,12 @@ export async function scanNow(paramsOverride?: Partial<ScanParams>): Promise<Sca
   // downstream pipeline remains testable with sample images.
   if (!deviceId) return await pickerFallback();
 
+  const savedOutDir = localStorage.getItem("pupa.saveDir.v1") || undefined;
   const params: ScanParams = {
     deviceId,
     dpi: paramsOverride?.dpi ?? settings?.dpi ?? 300,
     mode: paramsOverride?.mode ?? settings?.mode ?? "color",
+    outDir: paramsOverride?.outDir ?? savedOutDir,
   };
 
   const result = await window.pupa.scanner.scan(params);

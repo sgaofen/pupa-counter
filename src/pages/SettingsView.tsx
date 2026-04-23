@@ -221,9 +221,9 @@ export function SettingsView({ onToast }: { onToast: (msg: string) => void }) {
             </div>
             <div className="setting-row">
               <div>
-                <div className="sr-label">Default save directory</div>
+                <div className="sr-label">Scan save directory</div>
                 <div className="sr-hint">
-                  Remembered for future exports. Scans currently auto-save to{" "}
+                  Every new scan lands here. Unwritable or unset → falls back to{" "}
                   <span className="mono">%APPDATA%\pupa-counter-desktop\scans</span>.
                 </div>
               </div>
@@ -233,9 +233,14 @@ export function SettingsView({ onToast }: { onToast: (msg: string) => void }) {
                     className="input mono"
                     readOnly
                     value={saveDir}
-                    placeholder="Not set"
+                    placeholder="(using default · %APPDATA%\pupa-counter-desktop\scans)"
                   />
                   <button className="btn" onClick={pickDir}>{Icons.folder} Choose…</button>
+                  {saveDir && (
+                    <button className="btn btn-ghost" onClick={() => setSaveDir("")} title="Clear to use default">
+                      {Icons.x} Clear
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
