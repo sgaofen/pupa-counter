@@ -2,25 +2,24 @@ import React, { useEffect, useState } from "react";
 import { Icons } from "../components/icons";
 import type { ScannerDevice } from "../types";
 import { loadScannerSettings, saveScannerSettings } from "../adapters/scannerAdapter";
+import { useSessionStore } from "../store/sessionStore";
 
 const DPI_CHOICES = [200, 300, 400, 600];
+const SAVE_DIR_KEY = "pupa.saveDir.v1";
 
 export function SettingsView({ onToast }: { onToast: (msg: string) => void }) {
-  const [gpu, setGpu] = useState<"Auto" | "CPU" | "CUDA" | "MPS">("Auto");
+  const operator = useSessionStore((s) => s.session.operator);
+  const setOperator = useSessionStore((s) => s.setOperator);
+
   const [testing, setTesting] = useState(false);
-  const [threshold, setThreshold] = useState(62);
-  const [autoAdvance, setAutoAdvance] = useState(true);
-  const [saveDir, setSaveDir] = useState(
-    "C:\\Sarah\\PupaCounter\\scans\\"
-  );
+  const [refreshing, setRefreshing] = useState(false);
+  const [saveDir, setSaveDir] = useState<string>(() => localStorage.getItem(SAVE_DIR_KEY) ?? "");
 
   const [devices, setDevices] = useState<ScannerDevice[]>([]);
   const [selectedDevice, setSelectedDevice] = useState<string>("");
   const [dpi, setDpi] = useState<number>(300);
   const [mode, setMode] = useState<"color" | "grayscale">("color");
-  const [refreshing, setRefreshing] = useState(false);
 
-  // Load persisted scanner settings once, then probe for devices.
   useEffect(() => {
     const saved = loadScannerSettings();
     if (saved) {
@@ -44,7 +43,6 @@ export function SettingsView({ onToast }: { onToast: (msg: string) => void }) {
       if (list.length === 0) {
         onToast("No scanner detected");
       } else if (!list.find((d) => d.id === selectedDevice)) {
-        // Auto-pick first device if previous selection is gone or none set.
         setSelectedDevice(list[0].id);
       }
     } catch (err) {
@@ -67,6 +65,10 @@ export function SettingsView({ onToast }: { onToast: (msg: string) => void }) {
 
   const handleSave = () => {
     if (selectedDevice) saveScannerSettings({ deviceId: selectedDevice, dpi, mode });
+    if (saveDir) localStorage.setItem(SAVE_DIR_KEY, saveDir);
+    else localStorage.removeItem(SAVE_DIR_KEY);
+    // operator edits flow live through setOperator → store → session.json,
+    // so no extra persistence needed here.
     onToast("Settings saved");
   };
 
@@ -171,56 +173,28 @@ export function SettingsView({ onToast }: { onToast: (msg: string) => void }) {
           <div className="card-head">
             <div>
               <div className="card-title">Detection model</div>
-              <div className="card-sub" style={{ marginTop: 2 }}>CNN · version v12 · mock</div>
+              <div className="card-sub" style={{ marginTop: 2 }}>
+                Loaded by the Python daemon at startup · v12 CNN + classifier v5
+              </div>
             </div>
-            <span className="pill good"><span className="dot" />Loaded (mock)</span>
           </div>
           <div className="body">
             <div className="setting-row">
               <div>
                 <div className="sr-label">Model file</div>
-                <div className="sr-hint">PyTorch .pt. Real Python subprocess will replace the mock next week.</div>
+                <div className="sr-hint">
+                  Managed by the daemon. Override by setting{" "}
+                  <span className="mono">PUPA_DAEMON</span> /{" "}
+                  <span className="mono">PUPA_PYTHON</span> env vars before launching the app.
+                </div>
               </div>
               <div className="sr-control">
-                <div className="file-chooser">
-                  <input className="input mono" readOnly
-                    defaultValue={"C:\\PupaCounter\\models\\pupa_v12.pt"} />
-                  <button className="btn">{Icons.folder} Choose…</button>
-                </div>
-              </div>
-            </div>
-            <div className="setting-row">
-              <div>
-                <div className="sr-label">GPU preference</div>
-                <div className="sr-hint">Auto picks the fastest available backend.</div>
-              </div>
-              <div className="sr-control">
-                <div className="radio-group">
-                  {(["Auto", "CPU", "CUDA", "MPS"] as const).map((x) => (
-                    <label key={x} className={`radio ${gpu === x ? "on" : ""}`}>
-                      <input type="radio" name="gpu" checked={gpu === x} onChange={() => setGpu(x)} />{x}
-                    </label>
-                  ))}
-                </div>
-                <div className="hint mono">
-                  {navigator.userAgent.includes("Mac") ? "Detected: Apple Silicon · MPS available" : "Detected: CUDA 12.1 · NVIDIA RTX A4000 · 16 GB"}
-                </div>
-              </div>
-            </div>
-            <div className="setting-row">
-              <div>
-                <div className="sr-label">Confidence threshold</div>
-                <div className="sr-hint">Lower values detect more pupae, but more false positives.</div>
-              </div>
-              <div className="sr-control">
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 56px", gap: 12, alignItems: "center" }}>
-                  <input type="range" min={0} max={100} value={threshold}
-                    onChange={(e) => setThreshold(parseInt(e.target.value, 10))}
-                    style={{ accentColor: "var(--accent)" }} />
-                  <span className="mono" style={{ color: "var(--ink)" }}>
-                    {(threshold / 100).toFixed(2)}
-                  </span>
-                </div>
+                <input
+                  className="input mono"
+                  readOnly
+                  value="pupa_counter_v6/model/pupa_counter_v12.pt + peak_filter_clf.pkl"
+                  style={{ fontSize: 11.5 }}
+                />
               </div>
             </div>
           </div>
@@ -236,37 +210,39 @@ export function SettingsView({ onToast }: { onToast: (msg: string) => void }) {
           <div className="body">
             <div className="setting-row">
               <div><div className="sr-label">Default operator</div></div>
-              <div className="sr-control"><input className="input" defaultValue="Sarah Ruckman" /></div>
-            </div>
-            <div className="setting-row">
-              <div><div className="sr-label">Default save directory</div></div>
               <div className="sr-control">
-                <div className="file-chooser">
-                  <input className="input mono" readOnly value={saveDir} />
-                  <button className="btn" onClick={pickDir}>{Icons.folder} Choose…</button>
-                </div>
-              </div>
-            </div>
-            <div className="setting-row">
-              <div><div className="sr-label">Starting round number</div></div>
-              <div className="sr-control">
-                <input className="input" defaultValue="1" style={{ width: 96, textAlign: "center" }} />
+                <input
+                  className="input"
+                  value={operator}
+                  onChange={(e) => setOperator(e.target.value)}
+                  placeholder="Your name"
+                />
               </div>
             </div>
             <div className="setting-row">
               <div>
-                <div className="sr-label">Auto-advance image #</div>
-                <div className="sr-hint">Increment image number after each save.</div>
+                <div className="sr-label">Default save directory</div>
+                <div className="sr-hint">
+                  Remembered for future exports. Scans currently auto-save to{" "}
+                  <span className="mono">%APPDATA%\pupa-counter-desktop\scans</span>.
+                </div>
               </div>
               <div className="sr-control">
-                <div className={`switch ${autoAdvance ? "on" : ""}`} onClick={() => setAutoAdvance((v) => !v)} />
+                <div className="file-chooser">
+                  <input
+                    className="input mono"
+                    readOnly
+                    value={saveDir}
+                    placeholder="Not set"
+                  />
+                  <button className="btn" onClick={pickDir}>{Icons.folder} Choose…</button>
+                </div>
               </div>
             </div>
           </div>
         </div>
 
         <div className="s4-actions">
-          <button className="btn">Cancel</button>
           <button className="btn btn-primary" onClick={handleSave}>
             {Icons.check} Save changes
           </button>
