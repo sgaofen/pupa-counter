@@ -5,3 +5,4 @@ release/
 .vite/
 *.log
 session.json
+tsconfig.tsbuildinfo

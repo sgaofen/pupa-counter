@@ -103,6 +103,32 @@ declare global {
           yMax: number;
         }>;
       };
+      scanner: {
+        listDevices: () => Promise<ScannerDevice[]>;
+        scan: (params: ScanParams) => Promise<ScanResult>;
+      };
     };
   }
+}
+
+export interface ScannerDevice {
+  id: string;
+  name: string;
+  description: string;
+  manufacturer: string;
+}
+
+export interface ScanParams {
+  deviceId: string;
+  dpi?: number;                       // default 300
+  mode?: "color" | "grayscale";       // default "color"
+}
+
+export interface ScanResult {
+  ok: true;
+  path: string;
+  width: number;
+  height: number;
+  dpi: number;
+  mode: "color" | "grayscale";
 }

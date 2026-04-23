@@ -1,10 +1,13 @@
 /**
  * Scanner adapter.
  *
- * ⚠️  MOCK — opens the native file picker instead of driving a real
- *     scanner. Replace once the physical scanner arrives. Keep this
- *     interface stable so the rest of the UI doesn't need to change.
+ * Windows: drives a real WIA scanner via PowerShell COM in the main
+ * process. Outside Electron (browser preview) or on a non-Win platform
+ * it falls back to a file picker so the rest of the UI still works.
+ * The `ScanHandle` interface stays stable regardless of backend.
  */
+import type { ScanParams } from "../types";
+
 export interface ScanHandle {
   path: string;
   dataUrl: string;
@@ -12,13 +15,77 @@ export interface ScanHandle {
   height: number;
 }
 
-export async function scanNow(): Promise<ScanHandle | null> {
-  if (!window.pupa) {
-    return await browserFilePicker();
+const SETTINGS_KEY = "pupa.scanner.settings.v1";
+
+export interface ScannerSettings {
+  deviceId: string;
+  dpi: number;
+  mode: "color" | "grayscale";
+}
+
+export function loadScannerSettings(): ScannerSettings | null {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    return raw ? (JSON.parse(raw) as ScannerSettings) : null;
+  } catch {
+    return null;
   }
-  const path = await window.pupa.dialog.openImage();
+}
+
+export function saveScannerSettings(s: ScannerSettings): void {
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
+}
+
+export async function scanNow(paramsOverride?: Partial<ScanParams>): Promise<ScanHandle | null> {
+  // No Electron bridge → browser preview fallback.
+  if (!window.pupa) return await browserFilePicker();
+
+  // No real scanner API (older Electron main.js) → picker fallback, same as
+  // the original mock. Keeps dev loops working without a scanner hooked up.
+  if (!window.pupa.scanner) return await pickerFallback();
+
+  const settings = loadScannerSettings();
+  let deviceId = paramsOverride?.deviceId ?? settings?.deviceId ?? "";
+
+  // First-run convenience: auto-pick the first live WIA device if the user
+  // hasn't gone through Settings yet. We cache it so subsequent scans hit the
+  // same hardware without enumerating every time.
+  if (!deviceId) {
+    const list = await window.pupa.scanner.listDevices();
+    if (list.length > 0) {
+      deviceId = list[0].id;
+      saveScannerSettings({
+        deviceId,
+        dpi: settings?.dpi ?? 300,
+        mode: settings?.mode ?? "color",
+      });
+    }
+  }
+
+  // Still no device (none attached) — fall back to file picker so the
+  // downstream pipeline remains testable with sample images.
+  if (!deviceId) return await pickerFallback();
+
+  const params: ScanParams = {
+    deviceId,
+    dpi: paramsOverride?.dpi ?? settings?.dpi ?? 300,
+    mode: paramsOverride?.mode ?? settings?.mode ?? "color",
+  };
+
+  const result = await window.pupa.scanner.scan(params);
+  const dataUrl = await window.pupa.file.readImageDataUrl(result.path);
+  return {
+    path: result.path,
+    dataUrl,
+    width: result.width,
+    height: result.height,
+  };
+}
+
+async function pickerFallback(): Promise<ScanHandle | null> {
+  const path = await window.pupa!.dialog.openImage();
   if (!path) return null;
-  const dataUrl = await window.pupa.file.readImageDataUrl(path);
+  const dataUrl = await window.pupa!.file.readImageDataUrl(path);
   const dims = await getImageDims(dataUrl);
   return { path, dataUrl, ...dims };
 }
