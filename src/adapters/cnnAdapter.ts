@@ -1,11 +1,29 @@
 /**
  * CNN detection adapter.
  *
- * Uses the REAL V12 + clf_v5 pipeline via Electron IPC → Python subprocess
- * when available (window.pupa.cnn.detect). Falls back to a deterministic
- * mock when running in a plain browser (e.g. `vite` without `electron`).
+ * Contract with the UI:
+ *   • In Electron (window.pupa.cnn.detect exists) we run the REAL V12 +
+ *     clf_v5 pipeline via a persistent Python worker. If that worker
+ *     fails we THROW — never silently fall back to a mock. The UI is
+ *     responsible for catching the error, showing it to the operator,
+ *     and keeping the Save button disabled so fabricated data cannot
+ *     end up in the database.
+ *   • Outside Electron (plain `vite` in a browser tab) there is no
+ *     Python available, so we return a deterministic mock. Every mock
+ *     response is clearly tagged in `modelVersion` so it cannot be
+ *     confused with a real detection.
+ *   • Explicit opt-in: passing VITE_CNN_MOCK=1 at build time or setting
+ *     window.__PUPA_FORCE_MOCK__ = true in the renderer forces the mock
+ *     path even inside Electron (useful for UI-only demos).
  */
 import type { DetectionResult, Pupa, RankBand } from "../types";
+
+export class CnnUnavailableError extends Error {
+  constructor(message: string, public cause?: unknown) {
+    super(message);
+    this.name = "CnnUnavailableError";
+  }
+}
 
 function bandFor(rankPct: number): RankBand {
   if (rankPct < 5) return "0-5%";
@@ -14,35 +32,54 @@ function bandFor(rankPct: number): RankBand {
   return "75-100%";
 }
 
+function mockEnabled(): boolean {
+  // Flag set by either Vite env or a renderer-global for live toggling.
+  try {
+    if ((globalThis as any).__PUPA_FORCE_MOCK__ === true) return true;
+    const env = (import.meta as any).env;
+    if (env && env.VITE_CNN_MOCK === "1") return true;
+  } catch {}
+  return false;
+}
+
 export async function runDetection(
   imagePath: string,
   imageWidth: number = 1116,
   imageHeight: number = 2586
 ): Promise<DetectionResult> {
-  if (window.pupa?.cnn?.detect) {
+  const inElectron = !!window.pupa?.cnn?.detect;
+
+  if (inElectron && !mockEnabled()) {
     const t0 = performance.now();
+    let raw;
     try {
-      const raw = await window.pupa.cnn.detect(imagePath);
-      const durationMs = Math.round(performance.now() - t0);
-      return {
-        imageWidth: raw.imageWidth,
-        imageHeight: raw.imageHeight,
-        pupae: raw.pupae,
-        counts: raw.counts,
-        yMin: raw.yMin,
-        yMax: raw.yMax,
-        modelVersion: raw.modelVersion,
-        durationMs,
-      };
+      raw = await window.pupa!.cnn.detect(imagePath);
     } catch (err) {
-      console.error("Real CNN failed, falling back to mock:", err);
-      // fall through to mock so the UI still works during dev.
+      // Rethrow so the caller knows detection failed. Do NOT fall
+      // through to mock — fabricated data must never reach the DB.
+      throw new CnnUnavailableError(
+        `CNN worker failed: ${err instanceof Error ? err.message : String(err)}`,
+        err,
+      );
     }
+    const durationMs = Math.round(performance.now() - t0);
+    return {
+      imageWidth: raw.imageWidth,
+      imageHeight: raw.imageHeight,
+      pupae: raw.pupae,
+      counts: raw.counts,
+      yMin: raw.yMin,
+      yMax: raw.yMax,
+      modelVersion: raw.modelVersion,
+      durationMs,
+    };
   }
+
+  // Browser-only preview OR explicit mock override. Make it obvious.
   return mockDetection(imagePath, imageWidth, imageHeight);
 }
 
-// ---- mock fallback --------------------------------------------------------
+// ---- mock fallback (browser-only preview or explicit opt-in) --------------
 
 function mulberry32(seed: number) {
   return function () {
@@ -90,7 +127,7 @@ async function mockDetection(
     counts,
     yMin,
     yMax,
-    modelVersion: "mock (Python subprocess unavailable)",
+    modelVersion: "MOCK — synthetic data, NOT a real detection",
     durationMs: 400,
   };
 }

@@ -14,6 +14,47 @@ export function App() {
 
   const [tab, setTab] = useState<TabName>("Scan");
   const [toast, setToast] = useState<string | null>(null);
+  const [hydrated, setHydrated] = useState(false);
+
+  // Hydrate the session store from userData/session.json on mount.
+  // Falls back to the seeded demo session if the file is missing or
+  // malformed. Only flips `hydrated=true` after this runs so we don't
+  // persist the un-hydrated seed over a valid saved file.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const saved = await window.pupa?.session.load?.();
+        if (!cancelled && saved && saved.sessionId && Array.isArray(saved.rounds)) {
+          useSessionStore.setState({ session: saved });
+        }
+      } catch (err) {
+        console.warn("[session] hydrate failed:", err);
+      } finally {
+        if (!cancelled) setHydrated(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Persist after every session mutation. Guarded by `hydrated` so the
+  // initial seed doesn't overwrite a good on-disk session before we've
+  // had a chance to load it.
+  useEffect(() => {
+    if (!hydrated || !window.pupa?.session?.save) return;
+    // Subscribe — sessionStore updates the `session` object by
+    // replacement, so a referential-equality subscribe fires on every
+    // meaningful mutation (including commitPendingScan, startNewRound,
+    // setOperator, setExperiment).
+    const unsub = useSessionStore.subscribe((state, prev) => {
+      if (state.session !== prev.session) {
+        window.pupa!.session.save(state.session).catch((err: unknown) => {
+          console.warn("[session] save failed:", err);
+        });
+      }
+    });
+    return unsub;
+  }, [hydrated]);
 
   useEffect(() => {
     if (!toast) return;

@@ -4,13 +4,22 @@ import { ScanImage } from "../components/ScanImage";
 import { EditCanvas } from "../components/EditCanvas";
 import { useSessionStore } from "../store/sessionStore";
 import { scanNow, loadScanFromPath, listDemoScans } from "../adapters/scannerAdapter";
-import { runDetection } from "../adapters/cnnAdapter";
+import { runDetection, CnnUnavailableError } from "../adapters/cnnAdapter";
 import type { TabName } from "../components/TopNav";
 import type { Pupa } from "../types";
 
 interface Props {
   onNavigate: (tab: TabName) => void;
   onToast: (msg: string) => void;
+}
+
+/** Any detection whose modelVersion flags it as a mock must NOT be
+ *  persisted — the Save button is disabled and we also refuse at
+ *  save-time as a second line of defence. */
+function isMockModel(modelVersion?: string | null): boolean {
+  if (!modelVersion) return false;
+  const m = modelVersion.toLowerCase();
+  return m.includes("mock") || m.includes("synthetic");
 }
 
 export function ScanView({ onNavigate, onToast }: Props) {
@@ -25,6 +34,7 @@ export function ScanView({ onNavigate, onToast }: Props) {
   const startNewRound = useSessionStore((s) => s.startNewRound);
 
   const [processing, setProcessing] = useState(false);
+  const [detectionError, setDetectionError] = useState<string | null>(null);
   const [zoomCommand, setZoomCommand] = useState<
     { kind: "in" | "out" | "fit"; nonce: number } | null
   >(null);
@@ -45,10 +55,20 @@ export function ScanView({ onNavigate, onToast }: Props) {
   const loadAndDetect = async (handle: { path: string; dataUrl: string; width: number; height: number }) => {
     beginPendingScan(handle.path, handle.dataUrl);
     setProcessing(true);
+    setDetectionError(null);
     try {
       const detection = await runDetection(handle.path, handle.width, handle.height);
       setDetection(detection);
       setOriginalCnn(detection.pupae);
+    } catch (err) {
+      // CNN failed — clear detection, surface the real reason, and
+      // keep the Save button disabled (guarded by `state !== "detected"`).
+      const msg = err instanceof CnnUnavailableError ? err.message
+        : err instanceof Error ? err.message
+        : String(err);
+      console.error("[ScanView] detection failed:", err);
+      setDetectionError(msg);
+      onToast(`Detection failed — ${msg}`);
     } finally {
       setProcessing(false);
     }
@@ -75,6 +95,7 @@ export function ScanView({ onNavigate, onToast }: Props) {
   const handleProcess = async () => {
     if (!pendingScan) return handleNewScan();
     setProcessing(true);
+    setDetectionError(null);
     try {
       const det = await runDetection(
         pendingScan.imagePath,
@@ -83,6 +104,13 @@ export function ScanView({ onNavigate, onToast }: Props) {
       );
       setDetection(det);
       setOriginalCnn(det.pupae);
+    } catch (err) {
+      const msg = err instanceof CnnUnavailableError ? err.message
+        : err instanceof Error ? err.message
+        : String(err);
+      console.error("[ScanView] re-process failed:", err);
+      setDetectionError(msg);
+      onToast(`Detection failed — ${msg}`);
     } finally {
       setProcessing(false);
     }
@@ -95,6 +123,12 @@ export function ScanView({ onNavigate, onToast }: Props) {
   };
 
   const handleSave = () => {
+    // Second line of defence: refuse to persist mock detections even if
+    // the UI was somehow in a state where the button stayed enabled.
+    if (isMockModel(pendingScan?.detection?.modelVersion)) {
+      onToast("Refused to save — current detection is from the mock backend");
+      return;
+    }
     const record = commitPendingScan();
     if (record) {
       onToast(`Saved ${record.id} — ${record.totalPupae} pupae`);
@@ -149,8 +183,28 @@ export function ScanView({ onNavigate, onToast }: Props) {
               </span>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              {state === "detected" && !processing && (
+              {detectionError && !processing && (
+                <span className="pill" style={{
+                  color: "var(--bad)",
+                  borderColor: "color-mix(in oklab, var(--bad) 30%, transparent)",
+                  background: "color-mix(in oklab, var(--bad) 10%, transparent)",
+                }} title={detectionError}>
+                  <span className="dot" style={{ background: "var(--bad)" }} />
+                  Detection failed
+                </span>
+              )}
+              {state === "detected" && !processing && !detectionError && !isMockModel(det?.modelVersion) && (
                 <span className="pill good"><span className="dot" />Detection complete</span>
+              )}
+              {state === "detected" && !processing && isMockModel(det?.modelVersion) && (
+                <span className="pill" style={{
+                  color: "var(--warn)",
+                  borderColor: "color-mix(in oklab, var(--warn) 30%, transparent)",
+                  background: "color-mix(in oklab, var(--warn) 10%, transparent)",
+                }} title="Mock mode — real Python worker unavailable. Saving is disabled.">
+                  <span className="dot" style={{ background: "var(--warn)" }} />
+                  MOCK — not real data
+                </span>
               )}
               {processing && (
                 <span className="pill" style={{
@@ -161,7 +215,7 @@ export function ScanView({ onNavigate, onToast }: Props) {
                   <span className="dot" />Processing…
                 </span>
               )}
-              {state === "empty" && !processing && <span className="pill">No scan loaded</span>}
+              {state === "empty" && !processing && !detectionError && <span className="pill">No scan loaded</span>}
               {(manualAdded > 0 || removed > 0) && (
                 <span className="pill" style={{ color: "var(--accent)", borderColor: "color-mix(in oklab, var(--accent) 30%, transparent)", background: "var(--accent-soft)" }}>
                   <span className="dot" />edited
@@ -317,7 +371,16 @@ export function ScanView({ onNavigate, onToast }: Props) {
 
         <button className="btn btn-primary"
           onClick={handleSave}
-          disabled={state !== "detected"}
+          disabled={state !== "detected" || isMockModel(det?.modelVersion) || !!detectionError}
+          title={
+            isMockModel(det?.modelVersion)
+              ? "Save disabled — current detection is from the mock backend. Fix the Python worker in Settings → Detection model."
+              : detectionError
+              ? `Save disabled — detection failed: ${detectionError}`
+              : state !== "detected"
+              ? "Load and process a scan first."
+              : "Write this scan + its per-pupa rows to the session database."
+          }
           style={{ justifyContent: "center", padding: "10px 14px", fontSize: 13 }}>
           {Icons.check} Save to database
         </button>

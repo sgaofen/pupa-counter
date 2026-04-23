@@ -149,6 +149,11 @@ interface PendingScan {
   imagePath: string;
   imageDataUrl: string | null;  // populated once file is read
   imageNumber: number;
+  /** The round this scan was STARTED in. Commit always targets this
+   *  round even if the user switches to a different one mid-edit —
+   *  otherwise a scan that belongs to round N could silently end up
+   *  filed under N+1. */
+  roundId: string;
   detection: DetectionResult | null;
   metadata: PendingScanMeta;
 }
@@ -212,6 +217,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         imagePath,
         imageDataUrl,
         imageNumber: lastImgNum,
+        roundId: round?.roundId ?? "",
         detection: null,
         metadata: {
           operator: session.operator,
@@ -251,9 +257,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     : s),
 
   commitPendingScan: () => {
-    const { pendingScan, session, currentRoundId } = get();
+    const { pendingScan, session } = get();
     if (!pendingScan || !pendingScan.detection) return null;
-    const round = session.rounds.find((r) => r.roundId === currentRoundId);
+    // Always file the scan under the round it was STARTED in — not
+    // whatever the user switched to later. Falls back to currentRoundId
+    // only for hand-constructed payloads that somehow lack roundId.
+    const targetRoundId = pendingScan.roundId || get().currentRoundId;
+    const round = session.rounds.find((r) => r.roundId === targetRoundId);
     if (!round) return null;
     const d = pendingScan.detection;
     const manuallyEdited = d.pupae.some((p) => p.source === "manual");
@@ -281,7 +291,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       pupae: d.pupae,
     };
     const updatedRounds = session.rounds.map((r) =>
-      r.roundId === currentRoundId ? { ...r, scans: [...r.scans, record] } : r
+      r.roundId === targetRoundId ? { ...r, scans: [...r.scans, record] } : r
     );
     set({
       session: { ...session, rounds: updatedRounds },
