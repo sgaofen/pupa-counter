@@ -102,6 +102,7 @@ declare global {
           yMin: number;
           yMax: number;
         }>;
+        info: () => Promise<CnnInfo | null>;
       };
       scanner: {
         listDevices: () => Promise<ScannerDevice[]>;
@@ -132,4 +133,12 @@ export interface ScanResult {
   height: number;
   dpi: number;
   mode: "color" | "grayscale";
+}
+
+export interface CnnInfo {
+  ready: boolean;
+  device: string;              // "cpu" | "cuda" | "mps" | "xpu" | "privateuseone"
+  deviceName: string;          // human label: e.g. "Intel XPU · Intel(R) Arc(TM) 140T GPU"
+  model: string;               // e.g. "pupa_counter_v12.pt"
+  classifier: string | null;   // e.g. "peak_filter_clf.pkl" or null if none
 }
