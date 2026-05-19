@@ -9,6 +9,30 @@ self-contained (no system Python or sibling repos needed).
 trained on **109 hand-audited LiDE 300 scans / 10,712 labels**.
 Honest 10-scan hold-out F1 = **98.7 %** (recall 98.5 %, precision 99.0 %).
 
+## What it does
+
+A 300 dpi LiDE flatbed scan of a pupa sheet → CNN heatmap regression →
+peak extraction → 11-feature GBM classifier filter → annotated overlay
++ per-band counts (top 5 % / 5-25 % / middle 50 % / 75-95 % / bottom 5 %).
+
+| raw scan | counted overlay |
+|---|---|
+| ![raw scan](docs/screenshots/scan_input.png) | ![counted](docs/screenshots/scan_counted.png) |
+
+The CLI's `--json-out` produces a height-distribution chart for each scan:
+
+![distribution chart](docs/screenshots/distribution.png)
+
+## Desktop app
+
+The Electron front-end wraps the daemon — drive the LiDE 300 from a
+button, auto-count every scan, drag-edit any mis-detections, save per
+session to JSON, export CSV / xlsx for downstream analysis.
+
+![desktop app](docs/screenshots/desktop_ui.png)
+
+## Pipeline
+
 ```
    physical paper                    auto-detect best torch backend
    on scanner glass                  per-machine (CUDA / MPS / XPU /
