@@ -11,19 +11,18 @@ const { spawn } = require("child_process");
 const DEV = !app.isPackaged;
 
 // --- Local Python pipeline paths ---
-// In production (packaged build) every Python artefact ships inside
-// resources/python-pipeline/ — no sister-repo or system Python needed.
-// In dev we still point at the live `pupa_counter_v6` next to this repo
-// so source edits (model swap, daemon tweak) reload immediately.
+// Monorepo layout (2026-05-18 consolidation): daemon source + model
+// ship in `daemon/` next to electron/. Production builds copy the same
+// tree to resources/python-pipeline/ via electron-builder.
 const IS_WIN = process.platform === "win32";
-const V6_ROOT_DEFAULT = path.resolve(__dirname, "..", "..", "pupa_counter_v6");
+const DAEMON_ROOT_DEFAULT = path.resolve(__dirname, "..", "daemon");
 const PIPELINE_ROOT = DEV
-  ? V6_ROOT_DEFAULT
+  ? DAEMON_ROOT_DEFAULT
   : path.join(process.resourcesPath, "python-pipeline");
 const PYTHON_BIN_DEFAULT = DEV
   ? (IS_WIN
-      ? path.join(V6_ROOT_DEFAULT, ".venv", "Scripts", "python.exe")
-      : path.join(V6_ROOT_DEFAULT, ".venv", "bin", "python"))
+      ? path.join(DAEMON_ROOT_DEFAULT, ".venv", "Scripts", "python.exe")
+      : path.join(DAEMON_ROOT_DEFAULT, ".venv", "bin", "python"))
   : path.join(PIPELINE_ROOT, "python-runtime", IS_WIN ? "python.exe" : "bin/python3");
 const PYTHON_BIN = process.env.PUPA_PYTHON || PYTHON_BIN_DEFAULT;
 const CNN_SCRIPT =
@@ -31,16 +30,16 @@ const CNN_SCRIPT =
 const CNN_DAEMON_SCRIPT =
   process.env.PUPA_DAEMON || path.join(PIPELINE_ROOT, "pupa_counter_daemon.py");
 
-// Inference config — points the daemon at the LiDE 300 model trained
-// 2026-05-01 (F1 = 99.66 % on the 6-scan self-eval). Override any of
-// these by exporting the same env var before launching the desktop app.
+// Inference config — points the daemon at the LiDE 300 v3 model (trained
+// on 109 hand-audited scans, ship VAL F1 = 98.7 %). Override any of these
+// by exporting the same env var before launching the desktop app.
 const LIDE_MODEL = path.join(PIPELINE_ROOT, "model", "pupa_counter_lide300.pt");
 const LIDE_CLF   = path.join(PIPELINE_ROOT, "model", "peak_filter_clf_lide300.pkl");
 const DAEMON_ENV = {
   PUPA_MODEL_PATH:   process.env.PUPA_MODEL_PATH   || LIDE_MODEL,
   PUPA_CLF_PATH:     process.env.PUPA_CLF_PATH     || LIDE_CLF,
-  PUPA_PEAK_THR:     process.env.PUPA_PEAK_THR     || "0.40",
-  PUPA_MIN_DIST:     process.env.PUPA_MIN_DIST     || "4",
+  PUPA_PEAK_THR:     process.env.PUPA_PEAK_THR     || "0.50",
+  PUPA_MIN_DIST:     process.env.PUPA_MIN_DIST     || "3",
   PUPA_BBOX_CROP:    process.env.PUPA_BBOX_CROP    || "1",
   PUPA_CLF_PROB_THR: process.env.PUPA_CLF_PROB_THR || "0.50",
 };

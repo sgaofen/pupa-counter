@@ -1,13 +1,13 @@
-# Pupa Counter — Desktop
+# Pupa Counter
 
-A lab-facing Electron app that drives a flatbed scanner, runs a CNN to
-count silkworm pupae on the scanned page, and lets you hand-correct the
-detections before saving them to a per-session database.
+Long Lab silkworm-pupa counter — a single monorepo containing the
+desktop Electron app, the Python inference daemon, and the trained
+LiDE 300 v3 model. The packaged Windows installer ships everything
+self-contained (no system Python or sibling repos needed).
 
-Backend (since 2026-04-30): V12 CNN + `clf_v6_md5` classifier with
-`min_distance=5` peak extraction — F1 = 99.95 % on self-eval, 99.60 %
-on honest leave-one-scan-out CV. Lives in the sister repo
-[`pupa_counter_v6`](https://github.com/sgaofen/pupa_counter_v6).
+**Current ship (v0.4.0, 2026-05-18):** v3 CNN + GBM classifier
+trained on **109 hand-audited LiDE 300 scans / 10,712 labels**.
+Honest 10-scan hold-out F1 = **98.7 %** (recall 98.5 %, precision 99.0 %).
 
 ```
    physical paper                    auto-detect best torch backend
@@ -15,9 +15,9 @@ on honest leave-one-scan-out CV. Lives in the sister repo
         │                            DirectML / CPU)
         ▼                                       │
   ┌──────────────────┐    PNG     ┌──────────────────────┐
-  │  WIA via Power-  │──────────► │  Python daemon, v12  │
-  │  Shell COM       │            │  CNN + clf v6_md5    │
-  │  (Win 10/11)     │            │  (persistent worker) │
+  │  WIA via Power-  │──────────► │  Python daemon       │
+  │  Shell COM       │            │  pupa_counter_lide   │
+  │  (Win 10/11)     │            │  300_v3.pt + GBM clf │
   └──────────────────┘            └──────────┬───────────┘
                                              │ JSON-lines
                                              ▼
@@ -29,205 +29,100 @@ on honest leave-one-scan-out CV. Lives in the sister repo
                                     └──────────────────┘
 ```
 
-The CNN itself, training data, weights, and CLI all live in the sister
-repo [`pupa_counter_v6`](https://github.com/sgaofen/pupa_counter_v6).
-This repo is purely the GUI + scanner driver wrapper.
+## Repo layout
 
-## Quickstart on a new machine
+```
+pupa-counter/
+├── electron/           Electron main process (window, IPC, daemon spawn,
+│                       WIA scanner integration, session persistence)
+├── src/                React + Zustand UI — canvas, edit tools, sidebars
+├── daemon/             Python inference subproc
+│   ├── pupa_counter.py         CLI (single image, batch, --json-out)
+│   ├── pupa_counter_daemon.py  Persistent JSON-lines worker
+│   ├── model/                  Trained checkpoints
+│   │   ├── pupa_counter_lide300.pt        (v3 ship, 300 dpi)
+│   │   ├── peak_filter_clf_lide300.pkl    (v3 GBM filter)
+│   │   ├── pupa_counter_v12.pt            (1200 dpi fallback)
+│   │   └── peak_filter_clf_v6_md5.pkl     (v12 companion)
+│   ├── scripts/                setup_venv.py for the dev venv
+│   ├── examples/               sample scan + counted overlay + xlsx
+│   └── README.md               Detailed daemon / CLI docs
+├── data/               Accuracy proof for v3 ship
+│   ├── labels_109_audited.json    Gold labels (10,712 sure points)
+│   ├── stats/                    per-scan CSV + figures
+│   └── v3_ship_config.json       Machine-readable contingency result
+└── resources/          Icons, packaging assets
+```
 
-You need the **two repos side by side** (defaults assume
-`Documents/pupa_counter_desktop` and `Documents/pupa_counter_v6` next to
-each other; override with env vars if not).
+## Run
+
+### Dev mode (Mac / Linux / Windows)
 
 ```bash
-# 1. Both repos
-git clone https://github.com/sgaofen/pupa_counter_desktop.git
-git clone https://github.com/sgaofen/pupa_counter_v6.git
-
-# 2. Bootstrap the Python venv with the right torch wheel for *this*
-#    hardware. Detects NVIDIA / Apple Silicon / Intel Arc / AMD / CPU
-#    and installs the matching wheel + classifier deps.
-python pupa_counter_v6/scripts/setup_venv.py
-
-# 3. Install the desktop app + run dev
-cd pupa_counter_desktop
-npm install
-npm run dev               # Vite on :5173 + Electron window
+cd daemon && python scripts/setup_venv.py    # auto-picks XPU/CUDA/MPS/CPU torch wheel
+cd .. && npm install
+npm run dev                                  # vite + electron concurrently
 ```
 
-That's it. The CNN daemon pre-warms at window-ready, the scanner is
-auto-enumerated via WIA, and `Settings → Hardware acceleration` shows
-which backend ended up live.
-
-## Build & package
+### Packaged installer
 
 ```bash
-npm run build              # tsc + vite build → dist/
-npm run package:win        # NSIS .exe under release/
-npm run package:mac        # .dmg under release/
+npm run package:win   # NSIS installer (~1.1 GB, bundles python-runtime)
+npm run package:mac   # .dmg (un-signed)
 ```
 
-## Hardware acceleration
+The packaged build embeds:
+- Pruned Python 3.11.9 + torch + opencv + skimage + sklearn site-packages
+- Intel oneAPI runtime (so the same exe gets XPU on Arc machines)
+- LiDE 300 v3 model + classifier
+- All daemon source
 
-`pupa_counter_v6/pupa_counter.py::pick_device()` picks in this order
-based on what's reachable from the imported torch:
+## Inference defaults
 
-| Order | Backend  | Wheel index                                         | Typical hardware |
-|------:|----------|-----------------------------------------------------|------------------|
-| 1     | MPS      | default (`pip install torch`)                       | Apple Silicon Mac |
-| 2     | CUDA     | `https://download.pytorch.org/whl/cu126`            | NVIDIA dGPU |
-| 3     | XPU      | `https://download.pytorch.org/whl/xpu`              | Intel Arc / Core Ultra iGPU |
-| 4     | DirectML | default + `pip install torch-directml`              | AMD on Windows, fallback |
-| 5     | CPU      | default                                              | everyone else |
+| key | value | meaning |
+|---|---:|---|
+| `PUPA_MODEL_PATH` | `model/pupa_counter_lide300.pt` | v3 CNN |
+| `PUPA_CLF_PATH` | `model/peak_filter_clf_lide300.pkl` | v3 GBM |
+| `PUPA_PEAK_THR` | 0.50 | `peak_local_max(threshold_abs=...)` |
+| `PUPA_MIN_DIST` | 3 | `peak_local_max(min_distance=...)` |
+| `PUPA_BBOX_CROP` | 1 | restrict to high-heat blob region |
+| `PUPA_CLF_PROB_THR` | 0.50 | 2nd-stage classifier acceptance |
 
-`scripts/setup_venv.py` (in the v6 repo) detects OS + GPU and installs
-the right wheel, so step 2 of the Quickstart is the only thing a new
-machine has to do.
+All env-var overridable. See [`daemon/README.md`](daemon/README.md) for
+the full daemon JSON protocol + 11-feature classifier recipe.
 
-Measured detection time per scan, A4 @ 300 DPI (2481×3507):
+## v3 evaluation
 
-| Hardware                              | Per-scan time | Notes |
-|---------------------------------------|---------------|-------|
-| Apple M4 (10-core) MPS                | ~0.65 s       | from `pupa_counter_v6` README |
-| Intel Core Ultra 7 255H + Arc 140T    | ~4.1 s        | iGPU, shared memory |
-| Same machine, CPU only                | ~10 s         | for reference |
+10-scan honest hold-out (1,059 labels), evaluated by the v3 contingency
+sweep:
 
-## Scanner
+| Stage | VAL F1 | P | R |
+|---|---:|---:|---:|
+| CNN solo (thr=0.5, bbox=on) | 98.18 % | — | — |
+| + GBM classifier filter | **98.72 %** | 99.0 % | 98.5 % |
 
-Windows-only for now. Uses the Microsoft eSCL-over-USB universal driver
-through WIA COM (`electron/scanner/wia_*.ps1`), so most modern flatbed
-scanners work plug-and-play with **no vendor software install needed**.
+Per-scan miss count averages **1.6 / scan** (down 38 % from v0.3.x's
+2.6 / scan). 88 % of remaining misses are pupae <8 px from a sibling
+— the architectural floor at σ = 2 in the heatmap regression.
 
-Tested on **Canon CanoScan LiDE 300** (USB-powered, eSCL).
+See [`data/stats/summary.txt`](data/stats/summary.txt) +
+[`data/stats/`](data/stats/) for the full dataset distribution
+(top 5 % / 5-25 % / middle 50 % / 75-95 % / bottom 5 % bands per scan,
+y-position density, count histograms).
 
-Settings → Scanner exposes:
+## Provenance / history
 
-- **Device**: dropdown of every WIA scanner Windows sees
-- **Resolution**: 200 / 300 / 400 / 600 dpi (300 matches the training
-  domain — don't go higher unless you know the model can take it)
-- **Color mode**: color / grayscale (color is what the CNN was trained on)
-- **Test connection**: re-runs WIA enumeration
+This repo merges what used to be split across separate repos as of 2026-05-18:
 
-If the renderer hasn't been through Settings yet, the first scan auto-
-picks the first available device and persists that choice to
-`localStorage` for next time.
+| Old repo | Status | Tag preserved |
+|---|---|---|
+| `pupa_counter_desktop` | now this repo (renamed `pupa-counter`) | `pre-consolidation-2026-05-18` |
+| `pupa_counter_v6` | archived → became `daemon/` here | `pre-consolidation-2026-05-18` |
+| `pupa_counter` (V12 1200 dpi era) | archived | `pre-consolidation-2026-05-18` |
+| `pupa-counter-agent` (cellpose v0 experiment) | archived | `pre-consolidation-2026-05-18` |
 
-When no scanner is connected, **New scan** falls back gracefully to a
-file picker so the rest of the pipeline (CNN, manual correct, save)
-remains testable from sample PNGs.
-
-macOS / Linux scanner integration is not wired yet — on those
-platforms the **New scan** button always falls through to the file
-picker.
-
-## Loading images without scanning
-
-Three ways:
-
-1. **Drag a PNG / JPG** onto the scan canvas (anywhere on the card,
-   not just the empty drop zone).
-2. **Toolbar → Load file…** opens the system file picker.
-3. **Toolbar → New scan** triggers the WIA scanner.
-
-## Persistence
-
-| What | Where | Format |
-|------|-------|--------|
-| Session (rounds, scans, pupae) | `userData/session.json` | JSON, auto-saved on every mutation |
-| Scanned PNGs | `userData/scans/` (or user-chosen dir from Settings) | PNG @ chosen DPI |
-| Scanner settings (device + DPI + mode) | `localStorage[pupa.scanner.settings.v1]` | JSON |
-| Save-dir override | `localStorage[pupa.saveDir.v1]` | string |
-
-`userData` resolves to `%APPDATA%\pupa-counter-desktop` on Windows,
-`~/Library/Application Support/Pupa Counter/` on macOS.
-
-## Settings page
-
-| Card | What it actually does |
-|------|----------------------|
-| **Scanner** | Live WIA enumeration, DPI / color mode, persisted on Save |
-| **Detection model** | Read-only display of the daemon's reported hardware backend + model files. Override paths via `PUPA_PYTHON` / `PUPA_DAEMON` env vars before launch |
-| **Defaults** | Default operator (writes to session live), default save directory (persists to `localStorage`, validated at scan time with auto-fallback to userData) |
-
-## Project layout
-
-```
-electron/
-  main.js                     window mgmt, IPC, daemon spawn, scanner spawn
-  preload.js                  contextBridge → window.pupa.{session, dialog, file, cnn, scanner}
-  scanner/
-    wia_list.ps1              enumerate WIA devices → JSON to stdout
-    wia_scan.ps1              one scan with given DeviceId/Dpi/Mode → PNG + JSON
-src/
-  App.tsx                     tab router, dark mode, session hydrate/persist
-  pages/
-    ScanView.tsx              scan/load + canvas + metadata form
-    DatabaseView.tsx          per-round table, search, sort, CSV export
-    SettingsView.tsx          scanner / model / defaults
-  components/
-    EditCanvas.tsx            pan/zoom, L-click add, R-click delete pupae
-    ScanImage.tsx             placeholder for empty/processing states
-    TitleBar.tsx, TopNav.tsx  chrome
-    icons.tsx                 inline SVG icon set
-  adapters/
-    cnnAdapter.ts             window.pupa.cnn.detect → daemon
-    scannerAdapter.ts         window.pupa.scanner.scan, file-picker fallback
-  store/
-    sessionStore.ts           Zustand: session + pending scan + UI state
-  types.ts                    DetectionResult, Pupa, ScanRecord, ScannerDevice, ScanParams, CnnInfo
-```
-
-## IPC channels
-
-| Channel             | Direction         | Purpose |
-|---------------------|-------------------|---------|
-| `session:load/save` | renderer → main   | Hydrate / persist `session.json` |
-| `dialog:openImage`  | renderer → main   | OS file picker for PNG/JPG/TIFF |
-| `dialog:openDirectory` | renderer → main | OS dir picker for save-dir |
-| `file:readImageDataUrl` | renderer → main | Read a path → base64 data URL for `<img>` |
-| `file:listDemoScans` | renderer → main  | List `~/Downloads/pupate_batch/*.png` if present |
-| `cnn:detect`        | renderer → main   | Run detection on a PNG path; persistent daemon |
-| `cnn:info`          | renderer → main   | Daemon's `ready` payload (device, model, classifier) |
-| `scanner:listDevices` | renderer → main | Spawn `wia_list.ps1`, parse JSON |
-| `scanner:scan`      | renderer → main   | Spawn `wia_scan.ps1` with chosen params, parse JSON |
-
-## Dev tips
-
-- The **CNN daemon is pre-warmed at window-ready** so the first
-  detection click doesn't pay torch-import + model-load cost. If it
-  fails to start, the warning is logged and the real error surfaces on
-  first detect.
-- `npm run dev` opens DevTools detached. The renderer can be reloaded
-  with Ctrl+R; main-process changes need a full restart.
-- All scanner stdout is funnelled through one JSON line per script
-  invocation — extra debug `Write-Output` in PS scripts is tolerated,
-  only the **last non-empty line** is parsed as the result.
-- Renderer logs from `console.log` show up in DevTools; main-process
-  logs (including the daemon's stderr) show up in the terminal.
-
-## Known limitations
-
-- Scanner integration is **Windows-only** today. macOS would need an
-  ICA / Image Capture path; Linux needs SANE.
-- Persistence is JSON, not SQLite. The IPC shape is stable so swapping
-  in `better-sqlite3` is a main-process-only change.
-- TIFF support is not yet implemented (`sharp` would handle TIFF→PNG
-  conversion, but LiDE 300 + WIA emit PNG natively so it's not yet
-  needed).
-- The 1116×2586 demo seed in `sessionStore.ts` is synthetic, not real
-  detections.
-
-## Sister repo
-
-[`pupa_counter_v6`](https://github.com/sgaofen/pupa_counter_v6) holds:
-
-- The TinyUNet CNN (466K params, F1 99.95% w/ classifier filter as of
-  2026-04-30, F1 99.60% on honest leave-one-scan-out CV)
-- Model weights (`pupa_counter_v12.pt`, ~1.9 MB)
-- Classifier (`peak_filter_clf_v6_md5.pkl`, sklearn 1.6.1 GBM)
-- The persistent JSON-lines daemon this app spawns
-- `scripts/setup_venv.py` for one-shot multi-machine bootstrap
-
-## License
-
-MIT.
+Research / training stack (private to the lab):
+[`pupa_counter_research_handoff`](https://github.com/sgaofen/pupa_counter_research_handoff)
+— training scripts, labeling GUIs, audit data, per-scan diagnostics.
+See `HOW_TO_RETRAIN.md` there for the recipe that produced
+`pupa_counter_lide300.pt`.

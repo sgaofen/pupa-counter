@@ -6,3 +6,10 @@ release/
 *.log
 session.json
 tsconfig.tsbuildinfo
+
+# Daemon dev venv + py caches (after monorepo merge 2026-05-18)
+daemon/.venv/
+daemon/__pycache__/
+daemon/**/__pycache__/
+daemon/*.pyc
+daemon/output/

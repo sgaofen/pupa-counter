@@ -1,0 +1,22 @@
+============================================================
+Pupa counter v3 — full dataset summary (109 audited scans)
+============================================================
+
+total scans         : 109
+total pupae labeled : 10712
+per-scan count      : min=21  median=101  mean=98.3  max=126
+                      p25=90  p75=109  std=16.5
+
+Banded totals across all 109 scans (band by image y):
+  top 5%     :   199 pupae   (avg 1.8/scan)
+  top 5-25%  :   617 pupae   (avg 5.7/scan)
+  middle 50% :  7663 pupae   (avg 70.3/scan)
+  bot 75-95% :  1899 pupae   (avg 17.4/scan)
+  bottom 5%  :   334 pupae   (avg 3.1/scan)
+
+y-position spread (across all pupae, normalized 0=top of label range, 1=bottom):
+  p 10: 0.309
+  p 25: 0.481
+  p 50: 0.619
+  p 75: 0.724
+  p 90: 0.843

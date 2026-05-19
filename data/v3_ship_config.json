@@ -1,0 +1,26 @@
+{
+  "v3": {
+    "label": "v3",
+    "ckpt": "/Users/stephenyu/Documents/pupa_counter_research_handoff/lide300_v2/checkpoints/best_lide300_v3.pt",
+    "tier0_best": {
+      "thr": 0.5,
+      "val_f1": 0.9817842129845866
+    },
+    "tier05_best": {
+      "thr": 0.5,
+      "val_f1": 0.9817842129845866
+    },
+    "tier1_val_f1": 0.9872219592995741,
+    "overall_best_val_f1": 0.9872219592995741,
+    "ship_config": {
+      "use": "cnn+clf",
+      "ckpt": "/Users/stephenyu/Documents/pupa_counter_research_handoff/lide300_v2/checkpoints/best_lide300_v3.pt",
+      "clf": "/Users/stephenyu/Documents/pupa_counter_research_handoff/lide300_v2/checkpoints/peak_filter_clf_lide300_v3.pkl",
+      "thr": 0.5,
+      "min_d": 3,
+      "use_bbox": true,
+      "clf_prob_thr": 0.5
+    },
+    "ship": true
+  }
+}
