@@ -101,6 +101,11 @@ The packaged build embeds:
 - LiDE 300 v3 model + classifier
 - All daemon source
 
+See [`BUILD_INSTALLER.md`](BUILD_INSTALLER.md) for the full Windows build
+recipe (where the hand-built `daemon/python-runtime/` tree lives on the
+lab machine, release-upload workflow, what happens to user data when a
+new installer overwrites an old one).
+
 ## Inference defaults
 
 | key | value | meaning |
