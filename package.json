@@ -1,7 +1,7 @@
 {
   "name": "pupa-counter",
   "version": "0.4.0",
-  "description": "Long Lab pupa counter — Electron desktop app with bundled Python inference daemon and the LiDE 300 v3 CNN. Scans, counts, manually edits, and persists pupa detections.",
+  "description": "Long Lab pupa counter — Electron desktop app with bundled Python inference daemon and the LiDE 300 v4 CNN. Scans, counts, manually edits, and persists pupa detections.",
   "private": true,
   "main": "electron/main.js",
   "scripts": {
