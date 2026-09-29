@@ -1,6 +1,6 @@
 # Pupa Counter (v12 + clf_v6_md5)
 
-Automatic silkworm-pupa counter for 300 dpi paper-sheet scans, built on a
+Automatic *Drosophila* pupa counter for flatbed scans of pupa sheets, built on a
 lightweight U-Net (466K params). **v12 default** (fresh-trained on 99
 hand-corrected scans, 10,145 sure labels after multiple rounds of label
 cleanup + scanner black-border handling, with per-pixel spatial loss
@@ -406,8 +406,11 @@ Expected — tiled inference over a 1000×2500 scan on CPU is 2-3 s. Use
 MPS (Mac) or CUDA for ~0.6 s.
 
 **Results look noisy on my scans**
-The model was trained on 300 dpi, white-paper, tan/brown pupae on
-blue-ink sheets. Very different lighting, different species, or a
+The shipped LiDE 300 model was trained on Canon LiDE 300 scans that are
+really 150 DPI (1240 × 1753 A4); `model/manifest.json` records this as
+`trainDpi`, and the desktop daemon resizes any other DPI to it before
+counting. Pupae are yellow-brown to dark-brown Drosophila pupae on a clear
+plastic strip. Very different lighting, different species, or a
 different scanner will degrade accuracy. You'd need to label a few
 dozen of your own scans and fine-tune — see `HANDOFF_2026-04-16.md` in
 this repo for the training recipe, data paths, and checkpoint

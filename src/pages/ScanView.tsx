@@ -1,535 +1,479 @@
-import React, { useState } from "react";
-import { Icons } from "../components/icons";
-import { ScanImage } from "../components/ScanImage";
-import { EditCanvas } from "../components/EditCanvas";
-import { useSessionStore, isoNow } from "../store/sessionStore";
-import { scanNow, loadScanFromPath, listDemoScans } from "../adapters/scannerAdapter";
-import { runDetection, CnnUnavailableError } from "../adapters/cnnAdapter";
-import type { TabName } from "../components/TopNav";
-import type { Pupa } from "../types";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Icons, SheetGlyph } from "../components/icons";
+import { EditCanvas, type ZoomCommand } from "../components/EditCanvas";
+import { MetaForm } from "../components/MetaForm";
+import { currentReplicate, useSessionStore } from "../store/sessionStore";
+import { useSettings } from "../store/settingsStore";
+import { useUi } from "../store/uiStore";
+import { scanNow, loadScanFromPath, pickImageFile, getImageDims, type ScanHandle } from "../adapters/scannerAdapter";
+import { runDetection, isMockModel } from "../adapters/cnnAdapter";
+import { recordTop5, top5Count, top5Indices } from "../lib/bands";
+import type { Corner, ScanRecord } from "../types";
 
-interface Props {
-  onNavigate: (tab: TabName) => void;
-  onToast: (msg: string) => void;
+const MOD = navigator.platform.toLowerCase().includes("mac") ? "⌘" : "Ctrl";
+
+function isTyping(e: KeyboardEvent) {
+  const t = e.target as HTMLElement | null;
+  return !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
 }
 
-/** Any detection whose modelVersion flags it as a mock must NOT be
- *  persisted — the Save button is disabled and we also refuse at
- *  save-time as a second line of defence. */
-function isMockModel(modelVersion?: string | null): boolean {
-  if (!modelVersion) return false;
-  const m = modelVersion.toLowerCase();
-  return m.includes("mock") || m.includes("synthetic");
-}
+export function ScanView() {
+  const s = useSessionStore();
+  const { session, work, stage, stageDetail, error, draftMeta } = s;
+  const rep = currentReplicate(s);
+  const overlays = useSettings((x) => x.overlays);
+  const setOverlay = useSettings((x) => x.setOverlay);
+  const toast = useUi((x) => x.toast);
+  const setShortcutsOpen = useUi((x) => x.setShortcutsOpen);
+  const [zoomCmd, setZoomCmd] = useState<ZoomCommand | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const busy = stage === "scanning" || stage === "detecting";
+  const busyRef = useRef(false);
+  busyRef.current = busy;
 
-export function ScanView({ onNavigate, onToast }: Props) {
-  const session = useSessionStore((s) => s.session);
-  const currentRoundId = useSessionStore((s) => s.currentRoundId);
-  const pendingScan = useSessionStore((s) => s.pendingScan);
-  const beginPendingScan = useSessionStore((s) => s.beginPendingScan);
-  const setDetection = useSessionStore((s) => s.setDetection);
-  const setPendingPupae = useSessionStore((s) => s.setPendingPupae);
-  const updatePendingMeta = useSessionStore((s) => s.updatePendingMeta);
-  const commitPendingScan = useSessionStore((s) => s.commitPendingScan);
-  const startNewRound = useSessionStore((s) => s.startNewRound);
-  const setSessionOperator = useSessionStore((s) => s.setOperator);
-  const setSessionExperiment = useSessionStore((s) => s.setExperiment);
-
-  const [processing, setProcessing] = useState(false);
-  const [detectionError, setDetectionError] = useState<string | null>(null);
-  const [zoomCommand, setZoomCommand] = useState<
-    { kind: "in" | "out" | "fit"; nonce: number } | null
-  >(null);
-  const [originalCnn, setOriginalCnn] = useState<Pupa[] | null>(null);
-  const [dragActive, setDragActive] = useState(false);
-  // Collapsible sidebars — persisted to localStorage so the layout
-  // sticks across reloads. Default to expanded for first-time users.
-  const [leftCollapsed, setLeftCollapsed] = useState<boolean>(() => {
-    try { return localStorage.getItem("scanview.leftCollapsed") === "1"; } catch { return false; }
-  });
-  const [rightCollapsed, setRightCollapsed] = useState<boolean>(() => {
-    try { return localStorage.getItem("scanview.rightCollapsed") === "1"; } catch { return false; }
-  });
-  React.useEffect(() => {
-    try { localStorage.setItem("scanview.leftCollapsed", leftCollapsed ? "1" : "0"); } catch {}
-  }, [leftCollapsed]);
-  React.useEffect(() => {
-    try { localStorage.setItem("scanview.rightCollapsed", rightCollapsed ? "1" : "0"); } catch {}
-  }, [rightCollapsed]);
-
-  const state: "empty" | "processing" | "detected" =
-    !pendingScan ? "empty" : pendingScan.detection ? "detected" : "processing";
-
-  const round = session.rounds.find((r) => r.roundId === currentRoundId) ?? session.rounds[session.rounds.length - 1];
-  const totalScansInSession = session.rounds.reduce((a, r) => a + r.scans.length, 0);
-  const totalPupaeInSession = session.rounds.reduce(
-    (a, r) => a + r.scans.reduce((b, s) => b + s.totalPupae, 0),
-    0
-  );
-  const runningTotalInRound = (round?.scans ?? []).reduce((a, s) => a + s.totalPupae, 0)
-    + (pendingScan?.detection?.counts.total ?? 0);
-
-  const loadAndDetect = async (handle: { path: string; dataUrl: string; width: number; height: number }) => {
-    beginPendingScan(handle.path, handle.dataUrl);
-    setProcessing(true);
-    setDetectionError(null);
+  // ---- flow: scan / import → count → auto-save ------------------------------------
+  const count = useCallback(async (handle: ScanHandle) => {
+    const st = useSessionStore.getState();
+    st.setError(null);
+    st.setStage("detecting", "Counting pupae…");
     try {
-      const detection = await runDetection(handle.path, handle.width, handle.height);
-      setDetection(detection);
-      setOriginalCnn(detection.pupae);
+      const det = await runDetection(handle.path, { dpi: handle.actualDpi ?? null, width: handle.width, height: handle.height });
+      const mock = isMockModel(det.modelVersion);
+      const rec = st.acceptDetection({
+        imagePath: handle.path,
+        imageDataUrl: handle.dataUrl,
+        requestedDpi: handle.requestedDpi ?? null,
+        actualDpi: handle.actualDpi ?? null,
+        dpiSource: handle.dpiSource ?? null,
+      }, det, mock);
+      if (!mock) {
+        const r = currentReplicate(useSessionStore.getState());
+        toast(`Scan ${rec.imageNumber} saved to replicate ${r.replicateNumber} · ${rec.totalPupae} pupae`);
+      }
+      if (handle.warnings?.length) toast(`Scanner: ${handle.warnings[0]}`, "warn");
     } catch (err) {
-      // CNN failed — clear detection, surface the real reason, and
-      // keep the Save button disabled (guarded by `state !== "detected"`).
-      const msg = err instanceof CnnUnavailableError ? err.message
-        : err instanceof Error ? err.message
-        : String(err);
-      console.error("[ScanView] detection failed:", err);
-      setDetectionError(msg);
-      onToast(`Detection failed — ${msg}`);
-    } finally {
-      setProcessing(false);
+      const msg = err instanceof Error ? err.message : String(err);
+      useSessionStore.getState().setError(msg);
+      useSessionStore.getState().setStage(useSessionStore.getState().work ? "ready" : "idle");
     }
-  };
+  }, [toast]);
 
-  const handleNewScan = async () => {
-    const handle = await scanNow();
-    if (!handle) return;
-    await loadAndDetect(handle);
-  };
+  const doScan = useCallback(async () => {
+    if (busyRef.current) return;
+    const st = useSessionStore.getState();
+    st.setError(null);
+    st.setStage("scanning", "Scanning… keep the lid closed");
+    try {
+      const handle = await scanNow();
+      if (!handle) { st.setStage(st.work ? "ready" : "idle"); return; }
+      await count(handle);
+    } catch (err) {
+      const msg = (err instanceof Error ? err.message : String(err)).replace(/^Error invoking remote method '[^']+': (Error: )?/, "");
+      st.setError(`Scan failed: ${msg}`);
+      st.setStage(st.work ? "ready" : "idle");
+    }
+  }, [count, toast]);
 
-  const handleLoadFromFile = async () => {
-    if (!window.pupa) return;
-    const path = await window.pupa.dialog.openImage();
-    if (!path) return;
-    const handle = await loadScanFromPath(path);
-    if (!handle) return;
-    await loadAndDetect(handle);
-  };
+  const doImport = useCallback(async () => {
+    if (busyRef.current) return;
+    const handle = await pickImageFile();
+    if (handle) await count(handle);
+  }, [count]);
 
-  const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
+  const onDrop = async (e: React.DragEvent) => {
     e.preventDefault();
-    setDragActive(false);
+    setDragOver(false);
     const file = e.dataTransfer.files[0];
-    if (!file) return;
-    // Electron exposes the absolute filesystem path on dropped File objects.
-    // In browser-preview mode this is empty, so fall back to the blob URL.
-    const path = (file as File & { path?: string }).path;
+    if (!file || busyRef.current) return;
+    const path = window.pupa?.file.pathForFile(file) || "";
     if (path) {
-      const handle = await loadScanFromPath(path);
-      if (handle) await loadAndDetect(handle);
+      const h = await loadScanFromPath(path);
+      if (h) await count(h);
       return;
     }
-    const dataUrl = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = async () => {
-      await loadAndDetect({
-        path: file.name,
-        dataUrl,
-        width: img.naturalWidth,
-        height: img.naturalHeight,
-      });
-    };
-    img.src = dataUrl;
+    const url = URL.createObjectURL(file);
+    const dims = await getImageDims(url);
+    await count({ path: file.name, dataUrl: url, ...dims });
   };
 
-  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
-    if (Array.from(e.dataTransfer.types).includes("Files")) {
-      e.preventDefault();
-      if (!dragActive) setDragActive(true);
-    }
-  };
-
-  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
-    // Only clear when the cursor actually leaves the drop target, not when
-    // it moves onto a child element.
-    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
-    setDragActive(false);
-  };
-
-  const handleLoadDemo = async () => {
-    const demos = await listDemoScans();
-    if (demos.length === 0) {
-      onToast("No demo scans found in pupate_batch");
-      return;
-    }
-    const pick = demos[Math.floor(Math.random() * demos.length)];
-    const handle = await loadScanFromPath(pick);
-    if (!handle) return;
-    await loadAndDetect(handle);
-  };
-
-  const handleProcess = async () => {
-    if (!pendingScan) return handleNewScan();
-    setProcessing(true);
-    setDetectionError(null);
+  const openScan = useCallback(async (rec: ScanRecord) => {
+    if (busyRef.current) return;
+    let url: string | null = null;
     try {
-      const det = await runDetection(
-        pendingScan.imagePath,
-        pendingScan.detection?.imageWidth ?? 1116,
-        pendingScan.detection?.imageHeight ?? 2586,
+      if (window.pupa && (await window.pupa.file.exists(rec.imagePath))) {
+        url = await window.pupa.file.readImageDataUrl(rec.imagePath);
+      }
+    } catch { url = null; }
+    useSessionStore.getState().openRecord(rec, url);
+    if (!url) toast(`Image file not found on this computer: ${rec.imagePath}`, "warn");
+  }, [toast]);
+
+  const discard = () => {
+    const st = useSessionStore.getState();
+    const rec = st.work?.record;
+    st.discardWork();
+    if (rec && st.work?.persisted !== false) {
+      toast(`Removed scan ${rec.imageNumber} from replicate ${rec.replicateNumber}`, "warn",
+        { label: "Undo", run: () => useSessionStore.getState().restoreDiscarded() });
+    }
+  };
+
+  // ---- keyboard ------------------------------------------------------------------------
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (useUi.getState().tab !== "Scan") return;
+      const mod = e.metaKey || e.ctrlKey;
+      const k = e.key.toLowerCase();
+      if (mod && k === "z") { e.preventDefault(); e.shiftKey ? s.redo() : s.undo(); return; }
+      if (mod && k === "y") { e.preventDefault(); s.redo(); return; }
+      if (mod && k === "o") { e.preventDefault(); doImport(); return; }
+      if (mod && e.shiftKey && k === "n") { e.preventDefault(); s.startNewReplicate(); toast("Started a new replicate"); return; }
+      if (isTyping(e) || mod || e.altKey) return;
+      if (e.code === "Space") { e.preventDefault(); doScan(); return; }
+      if (k === "s") { setOverlay("sheet", !useSettings.getState().overlays.sheet); return; }
+      if (k === "m") { setOverlay("suspects", !useSettings.getState().overlays.suspects); return; }
+      if (k === "l") { setOverlay("bands", !useSettings.getState().overlays.bands); return; }
+      if (k === "?" || (e.shiftKey && k === "/")) { setShortcutsOpen(true); return; }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [s, doImport, doScan, toast, setOverlay, setShortcutsOpen]);
+
+  // Test hook for the screenshot tour (electron/tour.js).
+  useEffect(() => {
+    window.__pupaDebug = {
+      ...(window.__pupaDebug ?? {}),
+      // opts simulates what a scanner reports (e.g. asked 300, delivered 150).
+      importPath: async (p: string, opts?: { requestedDpi?: number; actualDpi?: number }) => {
+        const h = await loadScanFromPath(p);
+        if (h) await count({ ...h, ...(opts ?? {}), dpiSource: opts?.actualDpi ? "simulated scanner" : undefined });
+      },
+      setSheet: (c: Corner[]) => useSessionStore.getState().setSheetCorners(c, true),
+      pupae: () => useSessionStore.getState().work?.record.pupae.map((p) => ({ x: p.x, y: p.y, rankPct: p.rankPct, sheetPct: p.sheetPct })),
+      scan: () => doScan(),
+    };
+  }, [count, doScan]);
+
+  // ---- derived numbers -------------------------------------------------------------------
+  const rec = work?.record ?? null;
+  const top5 = useMemo(() => (rec ? top5Indices(rec.pupae) : new Set<number>()), [rec]);
+  const repTotal = rep.scans.reduce((a, x) => a + x.totalPupae, 0);
+  const repTop5 = rep.scans.reduce((a, x) => a + recordTop5(x), 0);
+  const allScans = session.replicates.flatMap((r) => r.scans);
+  const sessTotal = allScans.reduce((a, x) => a + x.totalPupae, 0);
+  const sessTop5 = allScans.reduce((a, x) => a + recordTop5(x), 0);
+  const inCurrentRep = !rec || rec.replicateNumber === rep.replicateNumber;
+
+  const banners: React.ReactNode[] = [];
+  if (work?.mock) {
+    banners.push(<div key="mock" className="banner bad"><b>Preview only.</b> The counting engine is not connected, so these dots are made up and nothing is saved.</div>);
+  }
+  if (rec && rec.requestedDpi && rec.actualDpi && Math.abs(rec.requestedDpi - rec.actualDpi) > 2) {
+    banners.push(
+      <div key="dpi" className="banner warn">
+        <span><b>Scanner delivered {rec.actualDpi} DPI, not the {rec.requestedDpi} DPI you asked for.</b> Counts are fine — the image is rescaled for the model — but check the scanner driver if you need full resolution.</span>
+      </div>
+    );
+  }
+  if (rec && work?.imageDataUrl) {
+    const sh = rec.sheet;
+    if (!sh || !sh.found) {
+      banners.push(
+        <div key="sheet" className="banner warn">
+          <span><b>Sheet outline not found.</b> Sheet position (0 = bottom, 100 = top) can't be computed until you place it.</span>
+          <button className="btn btn-sm" onClick={() => s.setSheetCorners(defaultCorners(rec), true)}>Place outline</button>
+        </div>
       );
-      setDetection(det);
-      setOriginalCnn(det.pupae);
-    } catch (err) {
-      const msg = err instanceof CnnUnavailableError ? err.message
-        : err instanceof Error ? err.message
-        : String(err);
-      console.error("[ScanView] re-process failed:", err);
-      setDetectionError(msg);
-      onToast(`Detection failed — ${msg}`);
-    } finally {
-      setProcessing(false);
+    } else if (!sh.manual && ((sh.confidence ?? 0) < 0.5 || sh.truncatedTop || sh.truncatedBottom)) {
+      const why = sh.truncatedTop ? "the top end looks cut off by the scan edge"
+        : sh.truncatedBottom ? "the bottom end looks cut off by the scan edge"
+        : `low confidence (${Math.round((sh.confidence ?? 0) * 100)}%)`;
+      banners.push(
+        <div key="sheet" className="banner info">
+          <span><b>Check the sheet outline</b> — {why}. Drag the four corner handles onto the sheet edges.</span>
+          <button className="btn btn-sm" onClick={() => s.setSheetCorners(sh.corners, true)}>Looks right</button>
+        </div>
+      );
     }
-  };
+  }
+  if (error && !busy) {
+    banners.push(
+      <div key="err" className="banner bad" role="alert">
+        <span>{error}</span>
+        <button className="iconbtn" style={{ width: 24, height: 24 }} title="Dismiss" onClick={() => s.setError(null)}>{Icons.x}</button>
+      </div>
+    );
+  }
 
-  const handleRevert = () => {
-    if (!originalCnn) return;
-    setPendingPupae(originalCnn);
-    onToast("Reverted to CNN output");
-  };
-
-  const handleSave = () => {
-    // Second line of defence: refuse to persist mock detections even if
-    // the UI was somehow in a state where the button stayed enabled.
-    if (isMockModel(pendingScan?.detection?.modelVersion)) {
-      onToast("Refused to save — current detection is from the mock backend");
-      return;
-    }
-    const record = commitPendingScan();
-    if (record) {
-      onToast(`Saved ${record.id} — ${record.totalPupae} pupae`);
-      setOriginalCnn(null);
-    }
-  };
-
-  const det = pendingScan?.detection;
-  const currentPupae: Pupa[] = det?.pupae ?? [];
-  const manualAdded = currentPupae.filter((p) => p.source === "manual").length;
-  const cnnOriginalCount = originalCnn?.filter((p) => p.source === "cnn").length ?? 0;
-  const cnnRemaining = currentPupae.filter((p) => p.source === "cnn").length;
-  const removed = Math.max(0, cnnOriginalCount - cnnRemaining);
-  const countForThisScan = currentPupae.length;
-
-  // Count-based banding: sort by image y (smaller y = top of image), then
-  // top 5% by COUNT (round) goes to the top band, bottom 5% to the bottom
-  // band, and the rest to middle. Concrete: 100 pupae → 5 / 90 / 5.
-  // 23 pupae → 1 / 21 / 1. A scan with 0 pupae has all bands 0.
-  const top5N = countForThisScan > 0 ? Math.max(1, Math.round(countForThisScan * 0.05)) : 0;
-  const bottom5N = countForThisScan > 0 ? Math.max(1, Math.round(countForThisScan * 0.05)) : 0;
-  const middleN = Math.max(0, countForThisScan - top5N - bottom5N);
+  const edits = rec ? {
+    added: rec.pupae.filter((p) => p.source === "manual").length,
+    removed: Math.max(0, (rec.cnnCount ?? rec.pupae.filter((p) => p.source === "cnn").length) - rec.pupae.filter((p) => p.source === "cnn").length),
+  } : { added: 0, removed: 0 };
 
   return (
-    <div
-      className="s1-body"
-      style={{
-        gridTemplateColumns:
-          `${leftCollapsed ? "36px" : "240px"} 1fr ${rightCollapsed ? "36px" : "420px"}`,
-      }}
-    >
-      <aside className={`sidebar${leftCollapsed ? " collapsed" : ""}`}>
-        <button
-          className="sidebar-toggle sidebar-toggle-left"
-          onClick={() => setLeftCollapsed((v) => !v)}
-          title={leftCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-          aria-label={leftCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-        >
-          {leftCollapsed ? "›" : "‹"}
-        </button>
-        {leftCollapsed ? null : (<>
-        <div className="side-section">
-          <div className="label">Session</div>
-          <dl className="session-card">
-            <dt>Operator</dt><dd>{session.operator}</dd>
-            <dt>Experiment</dt><dd>{session.experiment}</dd>
-            <dt>Start</dt><dd className="mono" style={{ fontSize: 11, color: "var(--muted)" }}>{session.startedAt.slice(0, 10)}</dd>
-            <dt>Round</dt><dd>Round {round?.roundNumber ?? 1}</dd>
-          </dl>
-        </div>
-        <div className="side-section">
-          <div className="label">Progress</div>
-          <div className="session-stats">
-            <div className="mini-stat"><div className="n">{totalScansInSession}</div><div className="l">Scans</div></div>
-            <div className="mini-stat"><div className="n">{totalPupaeInSession.toLocaleString()}</div><div className="l">Pupae</div></div>
+    <div className="ws">
+      {/* ---------------- replicate ledger ---------------- */}
+      <aside className="ledger" aria-label="Replicate">
+        <section className="panel-sec">
+          <div className="rep-head">
+            <div className="title">Replicate <span className="n">{rep.replicateNumber}</span></div>
+            {session.replicates.length > 1 && (
+              <select className="select rep-select" value={rep.replicateId} aria-label="Switch replicate"
+                onChange={(e) => s.selectReplicate(e.target.value)}>
+                {session.replicates.map((r) => <option key={r.replicateId} value={r.replicateId}>Replicate {r.replicateNumber}</option>)}
+              </select>
+            )}
           </div>
-        </div>
-        <div style={{ flex: 1 }} />
-        <button className="btn" style={{ justifyContent: "center" }} onClick={startNewRound}>
-          {Icons.plus} Start new round
-        </button>
-        <button className="btn btn-ghost" style={{ justifyContent: "center", marginTop: 4 }} onClick={handleLoadDemo}>
-          Load demo scan
-        </button>
-        </>)}
+          <div className="tally">
+            <div><span className="k">Pupae</span><span className="v" data-testid="rep-total">{repTotal.toLocaleString()}</span><span className="sub">this replicate</span></div>
+            <div><span className="k">Top 5%</span><span className="v top5" data-testid="rep-top5">{repTop5.toLocaleString()}</span><span className="sub">this replicate</span></div>
+            <div className="wide"><span className="k">Session</span><span className="v num">{sessTotal.toLocaleString()} <span className="muted">·</span> <span style={{ color: "var(--mark-top5)" }}>{sessTop5.toLocaleString()}</span></span></div>
+          </div>
+          <button className="btn" onClick={() => { s.startNewReplicate(); toast("Started a new replicate — labels reset to defaults"); }}
+            title={`New replicate (${MOD}+Shift+N)`}>
+            {Icons.plus} New replicate
+          </button>
+        </section>
+        <section className="panel-sec" style={{ flex: 1 }}>
+          <h3>Scans <span className="num" style={{ fontWeight: 500 }}>{rep.scans.length}</span></h3>
+          <div className="scanlist">
+            {rep.scans.length === 0 && <div className="empty">No scans yet. Put a sheet on the glass and press Space.</div>}
+            {[...rep.scans].reverse().map((x) => (
+              <div key={x.id} className={`row${rec?.id === x.id ? " on" : ""}`} onClick={() => openScan(x)} title={x.imagePath}>
+                <span className="i">{x.imageNumber}</span>
+                <span className="g">{x.genotype || "—"}{x.comments ? ` · ${x.comments}` : ""}</span>
+                <span className="t">{x.totalPupae}</span>
+                <span className="t5">{recordTop5(x)}</span>
+              </div>
+            ))}
+          </div>
+        </section>
       </aside>
 
-      <section className="middle">
-        <div
-          className="card scan-card"
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-          style={dragActive ? { outline: "2px dashed var(--accent)", outlineOffset: -2 } : undefined}
-        >
-          <div className="card-head">
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <div className="card-title">Current scan</div>
-              <span className="card-sub">
-                {pendingScan ? pendingScan.imagePath.split(/[\\/]/).pop() : "—"}
-              </span>
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              {detectionError && !processing && (
-                <span className="pill" style={{
-                  color: "var(--bad)",
-                  borderColor: "color-mix(in oklab, var(--bad) 30%, transparent)",
-                  background: "color-mix(in oklab, var(--bad) 10%, transparent)",
-                }} title={detectionError}>
-                  <span className="dot" style={{ background: "var(--bad)" }} />
-                  Detection failed
-                </span>
-              )}
-              {state === "detected" && !processing && !detectionError && !isMockModel(det?.modelVersion) && (
-                <span className="pill good"><span className="dot" />Detection complete</span>
-              )}
-              {state === "detected" && !processing && isMockModel(det?.modelVersion) && (
-                <span className="pill" style={{
-                  color: "var(--warn)",
-                  borderColor: "color-mix(in oklab, var(--warn) 30%, transparent)",
-                  background: "color-mix(in oklab, var(--warn) 10%, transparent)",
-                }} title="Mock mode — real Python worker unavailable. Saving is disabled.">
-                  <span className="dot" style={{ background: "var(--warn)" }} />
-                  MOCK — not real data
-                </span>
-              )}
-              {processing && (
-                <span className="pill" style={{
-                  color: "var(--accent)",
-                  borderColor: "color-mix(in oklab, var(--accent) 30%, transparent)",
-                  background: "var(--accent-soft)",
-                }}>
-                  <span className="dot" />Processing…
-                </span>
-              )}
-              {state === "empty" && !processing && !detectionError && <span className="pill">No scan loaded</span>}
-              {(manualAdded > 0 || removed > 0) && (
-                <span className="pill" style={{ color: "var(--accent)", borderColor: "color-mix(in oklab, var(--accent) 30%, transparent)", background: "var(--accent-soft)" }}>
-                  <span className="dot" />edited
-                  {manualAdded > 0 ? ` +${manualAdded}` : ""}
-                  {removed > 0 ? ` −${removed}` : ""}
-                </span>
-              )}
-            </div>
-          </div>
-
-          {/* Main canvas region */}
-          {state === "empty" ? (
-            <div
-              className="drop-zone"
-              onClick={handleLoadFromFile}
-              style={{
-                cursor: "pointer",
-                background: dragActive ? "var(--accent-soft)" : undefined,
-              }}
-            >
-              <div className="inner">
-                {Icons.upload}
-                <div className="primary">
-                  {dragActive ? "Drop file to analyze" : "Drag a scan here, or click to browse"}
-                </div>
-                <div className="secondary">
-                  Accepts .png / .jpg — or use <b>New scan</b> in the toolbar to trigger the scanner
-                </div>
-              </div>
-            </div>
-          ) : pendingScan?.imageDataUrl && det ? (
-            <div className="scan-img" style={{ padding: 0, margin: 12, display: "flex", flexDirection: "column" }}>
-              <EditCanvas
-                imageDataUrl={pendingScan.imageDataUrl}
-                imageWidth={det.imageWidth}
-                imageHeight={det.imageHeight}
-                pupae={currentPupae}
-                onChange={(next) => setPendingPupae(next)}
-                zoomCommand={zoomCommand}
-                showRankLines={true}
-              />
-            </div>
-          ) : (
-            <div className="scan-img">
-              <ScanImage variant={state} />
-            </div>
-          )}
-
-          <div className="status-strip">
-            <span>{countForThisScan} pupae{state === "detected" && manualAdded + removed > 0 ? ` (CNN ${cnnOriginalCount}${manualAdded > 0 ? ` +${manualAdded}` : ""}${removed > 0 ? ` −${removed}` : ""})` : " detected"}</span>
-            <span className="sep">·</span>
-            <span>{det?.durationMs ? `${(det.durationMs / 1000).toFixed(1)} s` : "—"}</span>
-            <span className="sep">·</span>
-            <span>model {det?.modelVersion ?? "—"}</span>
-            <span className="sep">·</span>
-            <span>{det ? `${det.imageWidth} × ${det.imageHeight}` : "—"}</span>
-          </div>
+      {/* ---------------- specimen stage ---------------- */}
+      <section className="stage">
+        <div className="stage-bar">
+          <button className="btn btn-primary" onClick={doScan} disabled={busy} title="Scan the next sheet (Space)">
+            {Icons.scan} {work ? "Scan next" : "Scan"} <span className="kbd">Space</span>
+          </button>
+          <button className="btn" onClick={doImport} disabled={busy} title={`Open an image file (${MOD}+O)`}>
+            {Icons.image} Import
+          </button>
+          <span className="sep" />
+          <button className="iconbtn" onClick={s.undo} disabled={!work?.undo.length} title={`Undo (${MOD}+Z)`}>{Icons.undo}</button>
+          <button className="iconbtn" onClick={s.redo} disabled={!work?.redo.length} title={`Redo (${MOD}+Shift+Z)`}>{Icons.redo}</button>
+          <span className="sep" />
+          <button className="iconbtn" onClick={() => setZoomCmd({ kind: "out", nonce: Date.now() })} disabled={!work?.imageDataUrl} title="Zoom out (−)">{Icons.zoomOut}</button>
+          <button className="iconbtn" onClick={() => setZoomCmd({ kind: "in", nonce: Date.now() })} disabled={!work?.imageDataUrl} title="Zoom in (+)">{Icons.zoomIn}</button>
+          <button className="iconbtn" onClick={() => setZoomCmd({ kind: "fit", nonce: Date.now() })} disabled={!work?.imageDataUrl} title="Fit whole scan (F)">{Icons.fit}</button>
+          <span className="grow" />
+          <button className={`iconbtn${overlays.top5 ? " on" : ""}`} onClick={() => setOverlay("top5", !overlays.top5)} title="Highlight the top 5%">{Icons.star}</button>
+          <button className={`iconbtn${overlays.bands ? " on" : ""}`} onClick={() => setOverlay("bands", !overlays.bands)} title="Rank lines 5 / 25 / 75 % (L)">{Icons.bands}</button>
+          <button className={`iconbtn${overlays.sheet ? " on" : ""}`} onClick={() => setOverlay("sheet", !overlays.sheet)} title="Sheet outline (S)">{Icons.sheet}</button>
+          <button className={`iconbtn${overlays.suspects ? " on" : ""}`} onClick={() => setOverlay("suspects", !overlays.suspects)} title="Possible misses (M)">{Icons.target}</button>
+          <button className="iconbtn" onClick={() => setShortcutsOpen(true)} title="Keyboard shortcuts (?)">{Icons.keyboard}</button>
         </div>
 
-        {/* Toolbar */}
-        <div className="middle-actions">
-          <button className="btn" onClick={handleNewScan} title="Trigger the connected scanner">
-            {Icons.upload} New scan
-          </button>
-          <button className="btn" onClick={handleLoadFromFile} title="Pick an existing PNG/JPG/TIFF from disk">
-            {Icons.folder} Load file…
-          </button>
-          <button className="btn btn-primary" onClick={handleProcess} disabled={!pendingScan || processing}>
-            {processing ? "Processing…" : <>Process {Icons.arrowRight}</>}
-          </button>
-          <div className="tool-group" style={{ marginLeft: 4 }}>
-            <button className="iconbtn" title="Zoom out (-)"
-              onClick={() => setZoomCommand({ kind: "out", nonce: Date.now() })}>
-              {Icons.zoomOut}
-            </button>
-            <button className="iconbtn" title="Zoom in (+)"
-              onClick={() => setZoomCommand({ kind: "in", nonce: Date.now() })}>
-              {Icons.zoomIn}
-            </button>
-            <button className="iconbtn" title="Fit (F)"
-              onClick={() => setZoomCommand({ kind: "fit", nonce: Date.now() })}>
-              {Icons.fit}
-            </button>
-          </div>
-          <button className="btn"
-            onClick={handleRevert}
-            disabled={!originalCnn || manualAdded + removed === 0}
-            title="Revert manual edits — restore CNN output">
-            {Icons.undo} Revert
-          </button>
-          <div className="spacer" />
-          <span className="hint mono">L-click add · R-click remove · ⌘Z undo · F fit</span>
+        <div className="stage-body"
+          onDragOver={(e) => { if (Array.from(e.dataTransfer.types).includes("Files")) { e.preventDefault(); setDragOver(true); } }}
+          onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(false); }}
+          onDrop={onDrop}>
+          {rec && work?.imageDataUrl ? (
+            <EditCanvas
+              imageDataUrl={work.imageDataUrl}
+              imageWidth={rec.imageWidth}
+              imageHeight={rec.imageHeight}
+              pupae={rec.pupae}
+              suspects={rec.suspects ?? []}
+              sheet={rec.sheet ?? null}
+              top5={top5}
+              overlays={overlays}
+              onEdit={s.editPupae}
+              onSheet={(c: Corner[]) => s.setSheetCorners(c, true)}
+              onAcceptSuspect={s.acceptSuspect}
+              zoomCommand={zoomCmd}
+            />
+          ) : (
+            <div className={`dropzone${dragOver ? " drag" : ""}`} onClick={() => !busy && !rec && doImport()}>
+              <div className="inner">
+                <SheetGlyph />
+                {rec ? (
+                  <>
+                    <h2>Image not available</h2>
+                    <p>The counts for scan {rec.imageNumber} are saved, but its image file isn't on this computer.</p>
+                  </>
+                ) : (
+                  <>
+                    <h2>{dragOver ? "Drop to count" : "Place a sheet on the scanner glass"}</h2>
+                    <p>Press <span className="kbd">Space</span> to scan. The count is saved to replicate {rep.replicateNumber} automatically. You can also drop an image file here.</p>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+          {rec && work?.imageDataUrl && (
+            <div className="legend" aria-hidden>
+              <span><i style={{ background: "var(--mark-cnn)" }} />model</span>
+              <span><i style={{ background: "var(--mark-manual)" }} />added</span>
+              <span><i className="ring" style={{ borderColor: "var(--mark-top5)", borderStyle: "solid" }} />top 5%</span>
+              {(rec.suspects?.length ?? 0) > 0 && overlays.suspects && <span><i className="ring" style={{ borderStyle: "dashed" }} />possible miss · click to add</span>}
+            </div>
+          )}
+          {banners.length > 0 && <div className="banners">{banners}</div>}
+          {busy && (
+            <div className="busy-veil"><div className="box"><span className="spinner" />{stageDetail}</div></div>
+          )}
+        </div>
+
+        <div className="stage-foot">
+          {rec ? (
+            <>
+              <span className="mono" title={rec.imagePath}>{rec.imagePath.split(/[\\/]/).pop()}</span>
+              <span className="mono">{rec.imageWidth} × {rec.imageHeight}</span>
+              <span className="mono" title={`DPI source: ${rec.dpiSource ?? "unknown"}`}>
+                {rec.actualDpi ? `${rec.actualDpi} DPI` : "DPI unknown"}
+                {rec.requestedDpi ? ` (asked ${rec.requestedDpi})` : ""}
+              </span>
+              {rec.inferenceScale && rec.inferenceScale !== 1 && (
+                <span className="mono" title="The model was trained at a different DPI; the image was resized for counting and the coordinates mapped back.">
+                  model ran at {rec.trainDpi} DPI (×{rec.inferenceScale})
+                </span>
+              )}
+              <span className="grow" />
+              <span className="mono">{rec.modelVersion ?? "saved record"}</span>
+            </>
+          ) : (
+            <><span>Ready</span><span className="grow" /><span className="mono">{session.sessionId}</span></>
+          )}
         </div>
       </section>
 
-      <aside className={`right${rightCollapsed ? " collapsed" : ""}`}>
-        <button
-          className="sidebar-toggle sidebar-toggle-right"
-          onClick={() => setRightCollapsed((v) => !v)}
-          title={rightCollapsed ? "Expand panel" : "Collapse panel"}
-          aria-label={rightCollapsed ? "Expand panel" : "Collapse panel"}
-        >
-          {rightCollapsed ? "‹" : "›"}
-        </button>
-        {rightCollapsed ? null : (<>
-        <div className="card form-card">
-          <div className="card-head">
-            <div className="card-title">Image information</div>
-            <span className="card-sub">Session metadata</span>
-          </div>
-          <div className="form-grid">
-            <div className="field"><label>Your name</label>
-              <input className="input"
-                value={pendingScan?.metadata.operator ?? session.operator}
-                onChange={(e) => {
-                  if (pendingScan) updatePendingMeta({ operator: e.target.value });
-                  else setSessionOperator(e.target.value);
-                }} /></div>
-            <div className="field"><label>Date & time</label>
-              <input className="input mono" readOnly value={isoNow().slice(0, 16)} /></div>
-            <div className="field"><label>File path</label>
-              <input className="input mono" readOnly
-                value={pendingScan?.imagePath ?? "—"}
-                style={{ fontSize: 11.5 }} /></div>
-            <div className="field"><label>Experiment</label>
-              <input className="input"
-                value={pendingScan?.metadata.experiment ?? session.experiment}
-                onChange={(e) => {
-                  if (pendingScan) updatePendingMeta({ experiment: e.target.value });
-                  else setSessionExperiment(e.target.value);
-                }} /></div>
-            <div className="field"><label>Image #</label>
-              <div style={{ display: "grid", gridTemplateColumns: "72px 1fr", gap: 8, alignItems: "center" }}>
-                <input className="input" value={pendingScan?.imageNumber ?? ""} readOnly style={{ textAlign: "center" }} />
-                <span className="hint">Auto-increments after save</span>
-              </div>
+      {/* ---------------- readout ---------------- */}
+      <aside className="readout" aria-label="This scan">
+        <section className="panel-sec">
+          <h3>
+            {rec ? <>Scan {rec.imageNumber} · replicate {rec.replicateNumber}</> : <>Next scan</>}
+            {rec && (work?.persisted ? <span className="pill good">Saved</span> : work?.mock ? <span className="pill bad">Not saved</span> : null)}
+          </h3>
+          <div className="count-hero">
+            <div>
+              <div className="cap">Pupae</div>
+              <div className={`big${rec ? "" : " empty"}`} data-testid="scan-total">{rec ? rec.totalPupae : "—"}</div>
             </div>
-            <div className="field"><label>Info filename</label>
-              <input className="input mono"
-                value={pendingScan?.metadata.infoFilename ?? ""}
-                onChange={(e) => updatePendingMeta({ infoFilename: e.target.value })}
-                disabled={!pendingScan}
-                placeholder={pendingScan ? "" : "Load a scan to edit"} /></div>
-            <div className="field"><label>Genotype</label>
-              <select className="select"
-                value={pendingScan?.metadata.genotype ?? "Cage B"}
-                onChange={(e) => updatePendingMeta({ genotype: e.target.value })}
-                disabled={!pendingScan}>
-                <option>Cage A</option><option>Cage B</option><option>Cage C</option>
-                <option>w1118 control</option><option>Custom…</option>
-              </select></div>
-            <div className="field"><label>Comments</label>
-              <textarea className="textarea" placeholder={pendingScan ? "Optional notes…" : "Load a scan to edit"}
-                value={pendingScan?.metadata.comments ?? ""}
-                onChange={(e) => updatePendingMeta({ comments: e.target.value })}
-                disabled={!pendingScan} /></div>
+            <div className="side">
+              <div className="cap">Top 5%</div>
+              <div className="t5" data-testid="scan-top5">{rec ? top5Count(rec.totalPupae) : "—"}</div>
+            </div>
           </div>
-        </div>
+          {rec && (
+            <div className="edits">
+              Model found <b>{rec.cnnCount ?? rec.pupae.filter((p) => p.source === "cnn").length}</b>
+              {edits.added > 0 && <> · added <b>{edits.added}</b></>}
+              {edits.removed > 0 && <> · removed <b>{edits.removed}</b></>}
+              {(rec.suspects?.length ?? 0) > 0 && <> · <span style={{ color: "var(--mark-suspect)" }}>{rec.suspects!.length} possible misses</span></>}
+            </div>
+          )}
+        </section>
 
-        <div className="card stats-card">
-          <div className="card-head"><div className="card-title">Stats for this scan</div></div>
-          <div className="stats-rows">
-            <div className="stat-row">
-              <div className="label-col">
-                <span className="l">Total pupae</span>
-                <span className="s">
-                  {manualAdded + removed > 0 ? `CNN ${cnnOriginalCount}, after edits` : "Detected on this image"}
-                </span>
-              </div>
-              <div className="n">{countForThisScan}</div>
-            </div>
-            <div className="stat-row">
-              <div className="label-col">
-                <span className="l">Top 5%</span>
-                <span className="s">Top {top5N} pupae by image position</span>
-              </div>
-              <div className="n accent">{top5N}</div>
-            </div>
-            <div className="stat-row">
-              <div className="label-col">
-                <span className="l">Middle 90%</span>
-                <span className="s">Remaining pupae between top &amp; bottom bands</span>
-              </div>
-              <div className="n">{middleN}</div>
-            </div>
-            <div className="stat-row">
-              <div className="label-col">
-                <span className="l">Bottom 5%</span>
-                <span className="s">Bottom {bottom5N} pupae by image position</span>
-              </div>
-              <div className="n accent">{bottom5N}</div>
-            </div>
-            <div className="stat-row">
-              <div className="label-col">
-                <span className="l">Running total</span>
-                <span className="s">Round {round?.roundNumber ?? 1}, all scans</span>
-              </div>
-              <div className="n">{runningTotalInRound.toLocaleString()}</div>
-            </div>
-          </div>
-        </div>
+        {rec && rec.totalPupae > 0 && (
+          <section className="panel-sec">
+            <h3>Distribution</h3>
+            <BandBlock rec={rec} />
+          </section>
+        )}
 
-        <button className="btn btn-primary"
-          onClick={handleSave}
-          disabled={state !== "detected" || isMockModel(det?.modelVersion) || !!detectionError}
-          title={
-            isMockModel(det?.modelVersion)
-              ? "Save disabled — current detection is from the mock backend. Fix the Python worker in Settings → Detection model."
-              : detectionError
-              ? `Save disabled — detection failed: ${detectionError}`
-              : state !== "detected"
-              ? "Load and process a scan first."
-              : "Write this scan + its per-pupa rows to the session database."
-          }
-          style={{ justifyContent: "center", padding: "10px 14px", fontSize: 13 }}>
-          {Icons.check} Save to database
-        </button>
-        </>)}
+        {rec && (
+          <section className="panel-sec">
+            <h3>Sheet {rec.sheet?.manual ? <span className="pill accent">Adjusted</span> : rec.sheet?.found ? <span className="pill">{Math.round((rec.sheet.confidence ?? 0) * 100)}% sure</span> : <span className="pill warn">Not found</span>}</h3>
+            <SheetBlock rec={rec} top5={top5} />
+          </section>
+        )}
+
+        <section className="panel-sec">
+          <h3>{rec ? "Labels for this scan" : "Labels"}</h3>
+          {(!rec || inCurrentRep) && (
+            <div className="carry">{Icons.check} Kept for the next scan in replicate {rep.replicateNumber}</div>
+          )}
+          <MetaForm idPrefix="scan" meta={rec ? rec : draftMeta} onChange={s.updateMeta} />
+        </section>
+
+        {rec && (
+          <section className="panel-sec">
+            <div className="readout-actions">
+              <button className="btn btn-sm" onClick={s.revertToCnn} disabled={edits.added + edits.removed === 0} title="Throw away manual edits and restore the model's dots">
+                {Icons.revert} Revert to model
+              </button>
+              <button className="btn btn-sm btn-danger" onClick={discard} title="Remove this scan from the replicate">
+                {Icons.trash} Remove scan
+              </button>
+            </div>
+          </section>
+        )}
       </aside>
     </div>
   );
+}
+
+function BandBlock({ rec }: { rec: ScanRecord }) {
+  const n = rec.totalPupae;
+  const t5 = top5Count(n);
+  const rows: { label: string; v: number; color: string }[] = [
+    { label: "Rank 0–5 %", v: rec.top5PctCount, color: "var(--mark-top5)" },
+    { label: "Rank 5–25 %", v: rec.rank5To25Count, color: "color-mix(in srgb, var(--mark-top5) 45%, var(--line-strong))" },
+    { label: "Rank 25–75 %", v: rec.middle50Count, color: "var(--line-strong)" },
+    { label: "Rank 75–100 %", v: rec.bottom25Count, color: "color-mix(in srgb, var(--accent) 45%, var(--line-strong))" },
+  ];
+  return (
+    <>
+      <div className="bandbar" aria-hidden>
+        {rows.map((r) => <span key={r.label} style={{ width: `${(r.v / Math.max(1, n)) * 100}%`, background: r.color }} />)}
+      </div>
+      <table className="bandtable">
+        <tbody>
+          <tr><td><span className="sw" style={{ background: "var(--mark-top5)", borderRadius: "50%" }} />Top 5 % (by count)</td><td className="n">{t5}</td></tr>
+          {rows.map((r) => (
+            <tr key={r.label}><td><span className="sw" style={{ background: r.color }} />{r.label} <span className="muted">of y-range</span></td><td className="n">{r.v}</td></tr>
+          ))}
+        </tbody>
+      </table>
+    </>
+  );
+}
+
+function SheetBlock({ rec, top5 }: { rec: ScanRecord; top5: Set<number> }) {
+  const sh = rec.sheet;
+  if (!sh?.found) return <div className="edits">Place the outline to get each pupa's height on the sheet.</div>;
+  const pcts = rec.pupae.map((p) => p.sheetPct).filter((v): v is number => typeof v === "number");
+  const topP = rec.pupae.filter((_, i) => top5.has(i)).map((p) => p.sheetPct).filter((v): v is number => typeof v === "number");
+  const mean = (a: number[]) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
+  const m = mean(pcts), mt = mean(topP);
+  return (
+    <table className="bandtable">
+      <tbody>
+        <tr><td>Mean sheet position</td><td className="n">{m == null ? "—" : m.toFixed(1)}</td></tr>
+        <tr><td>Mean of top 5 %</td><td className="n">{mt == null ? "—" : mt.toFixed(1)}</td></tr>
+        <tr><td>Length × width</td><td className="n">{sh.lengthPx ? `${Math.round(sh.lengthPx)} × ${Math.round(sh.widthPx ?? 0)} px` : "—"}</td></tr>
+        <tr><td>Tilt</td><td className="n">{sh.angleDeg != null ? `${sh.angleDeg.toFixed(1)}°` : "—"}</td></tr>
+        {(sh.truncatedTop || sh.truncatedBottom) && (
+          <tr><td colSpan={2} style={{ color: "var(--warn)" }}>{sh.truncatedTop ? "Top" : "Bottom"} end touches the scan edge</td></tr>
+        )}
+        <tr><td className="muted">Detector</td><td className="n muted">{sh.manual ? "adjusted by hand" : sh.method ?? "—"}</td></tr>
+      </tbody>
+    </table>
+  );
+}
+
+/** Starting outline when detection found nothing: a box around the pupae,
+ *  or the middle of the image. */
+function defaultCorners(rec: ScanRecord): Corner[] {
+  const W = rec.imageWidth, H = rec.imageHeight;
+  let x0 = W * 0.35, x1 = W * 0.65, y0 = H * 0.1, y1 = H * 0.9;
+  if (rec.pupae.length >= 2) {
+    const xs = rec.pupae.map((p) => p.x), ys = rec.pupae.map((p) => p.y);
+    const padX = Math.max(30, (Math.max(...xs) - Math.min(...xs)) * 0.15);
+    const padY = Math.max(30, (Math.max(...ys) - Math.min(...ys)) * 0.08);
+    x0 = Math.max(0, Math.min(...xs) - padX); x1 = Math.min(W - 1, Math.max(...xs) + padX);
+    y0 = Math.max(0, Math.min(...ys) - padY); y1 = Math.min(H - 1, Math.max(...ys) + padY);
+  }
+  return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
 }

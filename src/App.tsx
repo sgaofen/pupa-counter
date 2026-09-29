@@ -1,35 +1,48 @@
-import React, { useEffect, useState } from "react";
-import { TitleBar } from "./components/TitleBar";
-import { TopNav, type TabName } from "./components/TopNav";
+import React, { useEffect, useRef, useState } from "react";
+import { TopNav } from "./components/TopNav";
+import { ShortcutsModal } from "./components/Shortcuts";
 import { ScanView } from "./pages/ScanView";
 import { DatabaseView } from "./pages/DatabaseView";
 import { SettingsView } from "./pages/SettingsView";
 import { useSessionStore } from "./store/sessionStore";
+import { useSettings } from "./store/settingsStore";
+import { useUi } from "./store/uiStore";
+import { serializeSession } from "./lib/sessionSchema";
 
 export function App() {
-  const darkMode = useSessionStore((s) => s.darkMode);
-  const toggleDark = useSessionStore((s) => s.toggleDark);
-  const operator = useSessionStore((s) => s.session.operator);
-  const initials = operator.split(/\s+/).map((p) => p[0]).join("").slice(0, 2).toUpperCase();
-
-  const [tab, setTab] = useState<TabName>("Scan");
-  const [toast, setToast] = useState<string | null>(null);
+  const tab = useUi((s) => s.tab);
+  const toasts = useUi((s) => s.toasts);
+  const dismiss = useUi((s) => s.dismiss);
+  const theme = useSettings((s) => s.theme);
   const [hydrated, setHydrated] = useState(false);
+  const saveTimer = useRef<number | null>(null);
 
-  // Hydrate the session store from userData/session.json on mount.
-  // Falls back to the seeded demo session if the file is missing or
-  // malformed. Only flips `hydrated=true` after this runs so we don't
-  // persist the un-hydrated seed over a valid saved file.
+  // Theme: explicit choice sets data-theme on <html>; "system" leaves it
+  // unset so prefers-color-scheme decides.
+  useEffect(() => {
+    const el = document.documentElement;
+    if (theme === "system") el.removeAttribute("data-theme");
+    else el.setAttribute("data-theme", theme);
+  }, [theme]);
+
+  // Load the most recent session (or create the first one).
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      const st = useSessionStore.getState();
       try {
-        const saved = await window.pupa?.session.load?.();
-        if (!cancelled && saved && saved.sessionId && Array.isArray(saved.rounds)) {
-          useSessionStore.getState().loadSession(saved);
+        if (!window.pupa) {
+          st.loadSession({ sessionId: "browser-preview", operator: "", experiment: "", startedAt: "", rounds: [] });
+        } else {
+          let raw = await window.pupa.session.load();
+          if (!raw || !st.loadSession(raw)) {
+            raw = await window.pupa.session.create({ operator: useSettings.getState().defaultOperator });
+            st.loadSession(raw);
+          }
         }
       } catch (err) {
-        console.warn("[session] hydrate failed:", err);
+        console.warn("[session] load failed:", err);
+        useUi.getState().toast(`Could not open the last session: ${String(err)}`, "bad");
       } finally {
         if (!cancelled) setHydrated(true);
       }
@@ -37,63 +50,62 @@ export function App() {
     return () => { cancelled = true; };
   }, []);
 
-  // Persist after every session mutation. Guarded by `hydrated` so the
-  // initial seed doesn't overwrite a good on-disk session before we've
-  // had a chance to load it.
+  // Auto-save: every change to the session is written (debounced) to
+  // <userData>/sessions/<id>.json. Nothing is written before hydration.
   useEffect(() => {
-    if (!hydrated || !window.pupa?.session?.save) return;
-    // Subscribe — sessionStore updates the `session` object by
-    // replacement, so a referential-equality subscribe fires on every
-    // meaningful mutation (including commitPendingScan, startNewRound,
-    // setOperator, setExperiment).
-    const unsub = useSessionStore.subscribe((state, prev) => {
-      if (state.session !== prev.session) {
-        window.pupa!.session.save(state.session).catch((err: unknown) => {
-          console.warn("[session] save failed:", err);
-        });
+    if (!hydrated || !window.pupa) return;
+    const flush = async (session = useSessionStore.getState().session) => {
+      if (!session.sessionId) return;
+      useUi.getState().setSave({ state: "saving" });
+      try {
+        const res = await window.pupa!.session.save(serializeSession(session));
+        useUi.getState().setSave({ state: "saved", at: res?.savedAt ?? Date.now(), path: res?.path });
+      } catch (err) {
+        useUi.getState().setSave({ state: "error", error: String(err) });
+        useUi.getState().toast(`Saving failed: ${String(err)}`, "bad");
       }
+    };
+    const unsub = useSessionStore.subscribe((state, prev) => {
+      if (state.session === prev.session) return;
+      if (state.session.sessionId !== prev.session.sessionId) return; // switching sessions, not editing
+      if (saveTimer.current) window.clearTimeout(saveTimer.current);
+      useUi.getState().setSave({ state: "saving" });
+      saveTimer.current = window.setTimeout(() => flush(), 250);
     });
-    return unsub;
+    const onUnload = () => { if (saveTimer.current) { window.clearTimeout(saveTimer.current); flush(); } };
+    window.addEventListener("beforeunload", onUnload);
+    return () => { unsub(); window.removeEventListener("beforeunload", onUnload); };
   }, [hydrated]);
 
+  // Test hook for the screenshot tour.
   useEffect(() => {
-    if (!toast) return;
-    const t = setTimeout(() => setToast(null), 2400);
-    return () => clearTimeout(t);
-  }, [toast]);
-
-  // ⌘S / ⌘P keyboard hooks (lightweight, no dependency).
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey)) return;
-      if (e.key.toLowerCase() === "p") { e.preventDefault(); /* TODO: trigger process */ }
+    window.__pupaDebug = {
+      ...(window.__pupaDebug ?? {}),
+      setTab: (t: "Scan" | "Data" | "Settings") => useUi.getState().setTab(t),
+      setTheme: (t: "system" | "light" | "dark") => useSettings.getState().setTheme(t),
+      state: () => {
+        const s = useSessionStore.getState();
+        return { sessionId: s.session.sessionId, replicates: s.session.replicates.map((r) => ({ n: r.replicateNumber, scans: r.scans.length })), stage: s.stage, error: s.error, work: s.work ? { total: s.work.record.totalPupae, dpi: s.work.record.actualDpi, sheet: s.work.record.sheet } : null };
+      },
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
   }, []);
 
   return (
-    <div className="app-root" data-theme={darkMode ? "dark" : "light"}>
-      <TitleBar activeTab={tab} />
-      <div className="app">
-        <TopNav
-          activeTab={tab}
-          onTabChange={setTab}
-          darkMode={darkMode}
-          onToggleDark={toggleDark}
-          operatorInitials={initials || "SR"}
-          onToast={setToast}
-        />
-        {tab === "Scan" && <ScanView onNavigate={setTab} onToast={setToast} />}
-        {tab === "Database" && <DatabaseView />}
-        {tab === "Settings" && <SettingsView onToast={setToast} />}
+    <div className="app">
+      <TopNav />
+      {!hydrated ? (
+        <div className="page" />
+      ) : tab === "Scan" ? <ScanView /> : tab === "Data" ? <DatabaseView /> : <SettingsView />}
+      <ShortcutsModal />
+      <div className="toasts" aria-live="polite">
+        {toasts.map((t) => (
+          <div key={t.id} className={`toast ${t.tone}`}>
+            <span className="dot" />
+            <span>{t.msg}</span>
+            {t.action && <button onClick={() => { t.action!.run(); dismiss(t.id); }}>{t.action.label}</button>}
+          </div>
+        ))}
       </div>
-      {toast && (
-        <div className="toast good">
-          <span className="dot" />
-          <span>{toast}</span>
-        </div>
-      )}
     </div>
   );
 }

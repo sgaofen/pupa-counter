@@ -1,81 +1,117 @@
 # Pupa Counter
 
-Long Lab silkworm-pupa counter — a single monorepo containing the
+Long Lab *Drosophila* pupa counter — a single monorepo containing the
 desktop Electron app, the Python inference daemon, and the trained
-LiDE 300 v3 model. The packaged Windows installer ships everything
+Canon LiDE 300 model. The packaged Windows installer ships everything
 self-contained (no system Python or sibling repos needed).
 
-**Current ship (v0.4.0, 2026-05-18):** v3 CNN + GBM classifier
-trained on **109 hand-audited LiDE 300 scans / 10,712 labels**.
-Honest 10-scan hold-out F1 = **98.7 %** (recall 98.5 %, precision 99.0 %).
+**v0.5 (2026-09):** redesigned desktop app — scans auto-save into the
+current *replicate*, labels carry over between scans, running totals for
+all pupae and for the top 5 %, sheet outline + per-pupa sheet position,
+one-click CSV / Excel export, macOS scanning, and a DPI guard for the
+model. See [What changed in v0.5](#what-changed-in-v05).
+
+**Model:** LiDE 300 v4 CNN + GBM classifier (fine-tuned on 162 Top
+Offspring + 109 hand-audited LiDE 300 scans).
 
 ## What it does
 
-A 300 dpi LiDE flatbed scan of a pupa sheet → CNN heatmap regression →
-peak extraction → 11-feature GBM classifier filter → annotated overlay
-+ per-band counts (top 5 % / 5-25 % / middle 50 % / 75-95 % / bottom 5 %).
+A flatbed scan of a pupa strip → CNN heatmap regression → peak
+extraction → 11-feature GBM classifier filter → one dot per pupa, rank
+bands (0–5 / 5–25 / 25–75 / 75–100 % of the pupa y-range), the top 5 %
+by count, and each pupa's position along the sheet (0 = bottom end,
+100 = top end).
+
+**Resolution, for the record:** every scan the lab collected up to
+September 2026 is really **150 DPI** (1240 × 1753 A4). The old WIA script
+asked for 300 DPI but the request failed silently, and the model was
+trained on those 150 DPI scans. v0.5 checks the DPI the scanner actually
+delivers, warns when it differs from what was requested, and resizes any
+non-150 DPI image to the model's training DPI before counting
+(coordinates are mapped back to the original pixels).
 
 | raw scan | counted overlay |
 |---|---|
 | ![raw scan](docs/screenshots/scan_input.png) | ![counted](docs/screenshots/scan_counted.png) |
 
-The CLI's `--json-out` produces a height-distribution chart for each scan:
-
-![distribution chart](docs/screenshots/distribution.png)
-
 ## Desktop app
 
-The Electron front-end wraps the daemon — drive the LiDE 300 from a
-button, auto-count every scan, drag-edit any mis-detections, save per
-session to JSON, export CSV / xlsx for downstream analysis.
+![scan view](docs/screenshots/v0.5/02-scan-counted-2-light.png)
 
-![desktop app](docs/screenshots/desktop_ui.png)
+Daily loop: put a sheet on the glass → **Space** (or *Scan*) → the scan is
+counted and saved into the current replicate → check and correct → next
+sheet. Everything else:
+
+- **Scan** — left: the replicate ledger (running pupae / top-5 % totals
+  for the replicate and the session, list of scans; click one to reopen
+  it). Centre: the scan with model dots (green), added dots (blue), top-5 %
+  rings (magenta), possible misses (dashed amber, click to accept), rank
+  lines and the sheet outline with draggable corners. Right: counts,
+  distribution, sheet stats and the labels (genotype buttons, operator,
+  experiment, info filename, comments), which carry over to the next scan
+  of the same replicate. Click adds, right-click or **D** deletes, drag
+  moves, drag on empty space pans, wheel zooms, **⌘/Ctrl-Z** undoes.
+  Press **?** for all shortcuts.
+- **Data** — every scan in the session grouped by replicate with running
+  totals, per-pupa table for the selected scan, and one-click exports:
+  *Scans CSV*, *Per-pupa CSV*, *Excel workbook*. The file is revealed in
+  Explorer / Finder after export.
+- **Settings** — scanner, resolution, colour mode, the genotype button
+  list (add / rename / reorder / remove), default operator, where session
+  data, scans and exports live (with *Open folder*), model info, theme
+  (system / light / dark).
+
+Screenshots of every page in both themes: [`docs/screenshots/v0.5/`](docs/screenshots/v0.5/).
 
 ## Pipeline
 
 ```
-   physical paper                    auto-detect best torch backend
-   on scanner glass                  per-machine (CUDA / MPS / XPU /
-        │                            DirectML / CPU)
-        ▼                                       │
-  ┌──────────────────┐    PNG     ┌──────────────────────┐
-  │  WIA via Power-  │──────────► │  Python daemon       │
-  │  Shell COM       │            │  pupa_counter_lide   │
-  │  (Win 10/11)     │            │  300_v3.pt + GBM clf │
-  └──────────────────┘            └──────────┬───────────┘
-                                             │ JSON-lines
-                                             ▼
-                                    ┌──────────────────┐
-                                    │ Electron + React │
-                                    │ canvas + manual  │
-                                    │ correct + CSV    │
-                                    │ export           │
-                                    └──────────────────┘
+   plastic strip                     auto-detect best torch backend
+   on scanner glass                  (CUDA / MPS / XPU / DirectML / CPU)
+        │                                       │
+        ▼                                       ▼
+  ┌──────────────────┐    PNG     ┌───────────────────────────────┐
+  │ Windows: WIA via │──────────► │ Python daemon                 │
+  │   PowerShell COM │  + actual  │  resize to manifest trainDpi  │
+  │ macOS: icscan    │    DPI     │  CNN + GBM → pupae            │
+  │   (ImageCapture) │            │  sheet_detect → outline       │
+  └──────────────────┘            └──────────────┬────────────────┘
+                                                 │ JSON-lines
+                                                 ▼
+                                  ┌───────────────────────────────┐
+                                  │ Electron + React              │
+                                  │ edit · auto-save per replicate│
+                                  │ CSV / xlsx export             │
+                                  └───────────────────────────────┘
 ```
 
 ## Repo layout
 
 ```
 pupa-counter/
-├── electron/           Electron main process (window, IPC, daemon spawn,
-│                       WIA scanner integration, session persistence)
-├── src/                React + Zustand UI — canvas, edit tools, sidebars
-├── daemon/             Python inference subproc
-│   ├── pupa_counter.py         CLI (single image, batch, --json-out)
-│   ├── pupa_counter_daemon.py  Persistent JSON-lines worker
-│   ├── model/                  Trained checkpoints
-│   │   ├── pupa_counter_lide300.pt        (v3 ship, 300 dpi)
-│   │   ├── peak_filter_clf_lide300.pkl    (v3 GBM filter)
-│   │   ├── pupa_counter_v12.pt            (1200 dpi fallback)
-│   │   └── peak_filter_clf_v6_md5.pkl     (v12 companion)
-│   ├── scripts/                setup_venv.py for the dev venv
-│   ├── examples/               sample scan + counted overlay + xlsx
-│   └── README.md               Detailed daemon / CLI docs
-├── data/               Accuracy proof for v3 ship
-│   ├── labels_109_audited.json    Gold labels (10,712 sure points)
-│   ├── stats/                    per-scan CSV + figures
-│   └── v3_ship_config.json       Machine-readable contingency result
-└── resources/          Icons, packaging assets
+├── electron/              Electron main process
+│   ├── main.js            window, IPC, daemon spawn, sessions, export
+│   ├── preload.js         renderer API
+│   ├── tour.js            screenshot tour (dev only, PUPA_TOUR=…)
+│   └── scanner/
+│       ├── wia_list.ps1, wia_scan.ps1   Windows WIA
+│       └── mac/icscan.swift             macOS ImageCaptureCore CLI
+├── src/                   React + Zustand UI
+│   ├── pages/             ScanView, DatabaseView (Data), SettingsView
+│   ├── components/        EditCanvas, MetaForm, TopNav, …
+│   ├── store/             session / settings / UI stores
+│   └── lib/               bands, sheetPct, sessionSchema, exporters
+├── daemon/                Python inference subprocess
+│   ├── pupa_counter.py            CLI (single image, batch)
+│   ├── pupa_counter_daemon.py     persistent JSON-lines worker
+│   ├── sheet_detect.py            sheet outline detector
+│   └── model/
+│       ├── manifest.json                  model file, classifier, trainDpi, thresholds
+│       ├── pupa_counter_lide300.pt        LiDE 300 v4 CNN (trained at 150 DPI)
+│       ├── peak_filter_clf_lide300.pkl    matching GBM filter
+│       ├── pupa_counter_v12.pt            legacy (pre-LiDE scanner)
+│       └── peak_filter_clf_v6_md5.pkl     legacy companion
+└── data/                  accuracy proof for the v3 ship
 ```
 
 ## Run
@@ -85,40 +121,80 @@ pupa-counter/
 ```bash
 cd daemon && python scripts/setup_venv.py    # auto-picks XPU/CUDA/MPS/CPU torch wheel
 cd .. && npm install
-npm run dev                                  # vite + electron concurrently
+npm run build:icscan                         # macOS only: builds the scanner CLI
+npm run dev                                  # vite + electron
 ```
+
+`PUPA_PYTHON=/path/to/python` points the app at another Python
+environment. On macOS the app compiles `icscan` into its data folder on
+first scan if `npm run build:icscan` wasn't run (needs the Xcode command
+line tools).
 
 ### Packaged installer
 
 ```bash
 npm run package:win   # NSIS installer (~1.1 GB, bundles python-runtime)
-npm run package:mac   # .dmg (un-signed)
+npm run package:mac   # .dmg (unsigned), includes icscan
 ```
 
-The packaged build embeds:
-- Pruned Python 3.11.9 + torch + opencv + skimage + sklearn site-packages
-- Intel oneAPI runtime (so the same exe gets XPU on Arc machines)
-- LiDE 300 v3 model + classifier
-- All daemon source
+See [`BUILD_INSTALLER.md`](BUILD_INSTALLER.md) for the Windows build
+recipe and what an upgrade does to user data.
 
-See [`BUILD_INSTALLER.md`](BUILD_INSTALLER.md) for the full Windows build
-recipe (where the hand-built `daemon/python-runtime/` tree lives on the
-lab machine, release-upload workflow, what happens to user data when a
-new installer overwrites an old one).
+## Data and files
+
+- **Sessions:** one JSON file per session in `<userData>/sessions/`
+  (Windows `%APPDATA%\pupa-counter\sessions\`). Saved automatically after
+  every change (atomic write). Settings → *Data & files* shows and opens
+  the folder.
+- **File format:** v0.5 writes `schemaVersion: 2` but keeps the original
+  key names (`rounds`, `roundId`, `roundNumber` = replicate) so older
+  versions can still open the files. New per-scan fields: `top5Selected`,
+  `requestedDpi`, `actualDpi`, `dpiSource`, `trainDpi`, `inferenceScale`,
+  `sheet` (corners, confidence, `manual`), per-pupa `sheetPct`, `score`,
+  `prob`. Before the first v0.5 write to an older file, the original is
+  copied to `sessions/_backup_before_v0.5/`.
+- **Scans:** PNGs in `<userData>/scans/` or the folder chosen in Settings.
+- **Exports:** `Documents/Pupa Counter Exports/` or the folder chosen in
+  Settings. Columns are listed in `src/lib/exporters.ts`.
 
 ## Inference defaults
 
+From `daemon/model/manifest.json`; every value can be overridden with an
+env var before launching the app.
+
 | key | value | meaning |
 |---|---:|---|
-| `PUPA_MODEL_PATH` | `model/pupa_counter_lide300.pt` | v3 CNN |
-| `PUPA_CLF_PATH` | `model/peak_filter_clf_lide300.pkl` | v3 GBM |
+| `trainDpi` / `PUPA_TRAIN_DPI` | 150 | images at other DPIs are resized to this |
+| `PUPA_MODEL_PATH` | `model/pupa_counter_lide300.pt` | CNN |
+| `PUPA_CLF_PATH` | `model/peak_filter_clf_lide300.pkl` | GBM |
 | `PUPA_PEAK_THR` | 0.50 | `peak_local_max(threshold_abs=...)` |
 | `PUPA_MIN_DIST` | 3 | `peak_local_max(min_distance=...)` |
 | `PUPA_BBOX_CROP` | 1 | restrict to high-heat blob region |
 | `PUPA_CLF_PROB_THR` | 0.50 | 2nd-stage classifier acceptance |
 
-All env-var overridable. See [`daemon/README.md`](daemon/README.md) for
-the full daemon JSON protocol + 11-feature classifier recipe.
+The image DPI comes from the scanner when scanning; for imported files it
+is inferred from the pixel size (A4 / LiDE bed), then PNG metadata, and
+otherwise assumed to be `trainDpi`.
+
+## What changed in v0.5
+
+- "Round" is now **replicate** everywhere in the UI and exports (files
+  keep the old keys, see above).
+- Labels (genotype, operator, experiment, comments, info filename) carry
+  over within a replicate; a new replicate or session resets them.
+  Genotype buttons are editable in Settings (default list adds *Cage A-1*
+  and *Cage A-2*); any value can be typed.
+- Running totals for the top 5 % next to the pupa totals (replicate and
+  session).
+- Sheet outline detection, draggable corners, per-pupa `sheetPct`.
+- One-click exports (scan summary CSV, per-pupa CSV, xlsx) revealed in the
+  file manager.
+- **Bug fix:** `wia_scan.ps1` swallowed the resolution error (and set the
+  intent after the resolution, which resets it on the LiDE 300 driver).
+  It now sets properties by WIA ID in the right order, reads them back and
+  reports `requestedDpi` / `actualDpi`; the UI warns on a mismatch.
+- macOS scanning through ImageCaptureCore (`electron/scanner/mac`).
+- DPI guard in the daemon, driven by the model manifest.
 
 ## v3 evaluation
 
@@ -130,14 +206,8 @@ sweep:
 | CNN solo (thr=0.5, bbox=on) | 98.18 % | — | — |
 | + GBM classifier filter | **98.72 %** | 99.0 % | 98.5 % |
 
-Per-scan miss count averages **1.6 / scan** (down 38 % from v0.3.x's
-2.6 / scan). 88 % of remaining misses are pupae <8 px from a sibling
-— the architectural floor at σ = 2 in the heatmap regression.
-
-See [`data/stats/summary.txt`](data/stats/summary.txt) +
-[`data/stats/`](data/stats/) for the full dataset distribution
-(top 5 % / 5-25 % / middle 50 % / 75-95 % / bottom 5 % bands per scan,
-y-position density, count histograms).
+See [`data/stats/summary.txt`](data/stats/summary.txt) for the dataset
+distribution.
 
 ## Provenance / history
 
@@ -147,11 +217,8 @@ This repo merges what used to be split across separate repos as of 2026-05-18:
 |---|---|---|
 | `pupa_counter_desktop` | now this repo (renamed `pupa-counter`) | `pre-consolidation-2026-05-18` |
 | `pupa_counter_v6` | archived → became `daemon/` here | `pre-consolidation-2026-05-18` |
-| `pupa_counter` (V12 1200 dpi era) | archived | `pre-consolidation-2026-05-18` |
+| `pupa_counter` (V12, pre-LiDE scanner) | archived | `pre-consolidation-2026-05-18` |
 | `pupa-counter-agent` (cellpose v0 experiment) | archived | `pre-consolidation-2026-05-18` |
 
 Research / training stack (private to the lab):
-[`pupa_counter_research_handoff`](https://github.com/sgaofen/pupa_counter_research_handoff)
-— training scripts, labeling GUIs, audit data, per-scan diagnostics.
-See `HOW_TO_RETRAIN.md` there for the recipe that produced
-`pupa_counter_lide300.pt`.
+[`pupa_counter_research_handoff`](https://github.com/sgaofen/pupa_counter_research_handoff).

@@ -1,7 +1,7 @@
 {
   "name": "pupa-counter",
-  "version": "0.4.0",
-  "description": "Long Lab pupa counter — Electron desktop app with bundled Python inference daemon and the LiDE 300 v4 CNN. Scans, counts, manually edits, and persists pupa detections.",
+  "version": "0.5.0",
+  "description": "Long Lab Drosophila pupa counter \u2014 Electron desktop app with bundled Python inference daemon (LiDE 300 v4 CNN). Scans (Windows WIA / macOS ImageCaptureCore), counts, lets you correct, and saves per replicate.",
   "private": true,
   "main": "electron/main.js",
   "scripts": {
@@ -9,11 +9,14 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "start": "electron .",
-    "package:mac": "electron-builder --mac",
-    "package:win": "electron-builder --win",
-    "lint": "eslint src --ext .ts,.tsx"
+    "package:mac": "npm run build && npm run build:icscan && electron-builder --mac",
+    "package:win": "npm run build && electron-builder --win",
+    "lint": "eslint src --ext .ts,.tsx",
+    "build:icscan": "mkdir -p electron/scanner/mac/bin && xcrun swiftc -O electron/scanner/mac/icscan.swift -o electron/scanner/mac/bin/icscan"
   },
   "dependencies": {
+    "@fontsource/ibm-plex-mono": "^5.3.0",
+    "@fontsource/ibm-plex-sans": "^5.3.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "zustand": "^4.5.4"
@@ -56,15 +59,28 @@
         "to": "python-pipeline/pupa_counter_daemon.py"
       },
       {
+        "from": "daemon/sheet_detect.py",
+        "to": "python-pipeline/sheet_detect.py"
+      },
+      {
         "from": "daemon/model",
         "to": "python-pipeline/model",
         "filter": [
+          "manifest.json",
           "pupa_counter_lide300.pt",
           "peak_filter_clf_lide300.pkl"
         ]
       }
     ],
-    "mac": { "category": "public.app-category.developer-tools" },
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "extraResources": [
+        {
+          "from": "electron/scanner/mac/bin/icscan",
+          "to": "icscan"
+        }
+      ]
+    },
     "win": {
       "target": "nsis",
       "signAndEditExecutable": false
