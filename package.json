@@ -61,10 +61,16 @@
         "to": "python-pipeline/sheet_detect.py"
       },
       {
+        "from": "daemon/stage2.py",
+        "to": "python-pipeline/stage2.py"
+      },
+      {
         "from": "daemon/model",
         "to": "python-pipeline/model",
         "filter": [
           "manifest.json",
+          "pupa_counter_lide300_v5.pt",
+          "stage2_clf_v5.pkl",
           "pupa_counter_lide300.pt",
           "peak_filter_clf_lide300.pkl"
         ]

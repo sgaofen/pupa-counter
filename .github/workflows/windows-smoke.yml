@@ -1,0 +1,43 @@
+name: windows-smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  daemon:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install daemon dependencies (CPU torch)
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r daemon/requirements.txt
+      - name: Daemon smoke test (v5 + stage 2 on CPU)
+        run: python tests/windows_smoke.py
+      - name: Parse scanner PowerShell scripts
+        shell: pwsh
+        run: |
+          foreach ($f in Get-ChildItem electron/scanner/*.ps1) {
+            $errs = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$errs) | Out-Null
+            if ($errs.Count) { $errs | ForEach-Object { Write-Error "$($f.Name): $_" }; exit 1 }
+            Write-Host "$($f.Name): OK"
+          }
+
+  frontend:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build

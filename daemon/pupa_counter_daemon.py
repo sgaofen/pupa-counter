@@ -120,6 +120,7 @@ _CLF_PROB_THR = _envf("PUPA_CLF_PROB_THR", _INF.get("clfProbThr", 0.50))
 _STAGE2 = None  # loaded in main() when the manifest has a "stage2" block
 _TILING = _INF.get("tiling", "padded")
 _EXCLUDE_BORDER = bool(_INF.get("excludeBorder", True))
+_SKIP_BLANK = bool(_INF.get("skipBlankTiles", False))
 TRAIN_DPI = int(_envf("PUPA_TRAIN_DPI", MANIFEST.get("trainDpi", 150)))
 
 
@@ -333,7 +334,7 @@ def run_model(img_rgb: np.ndarray, model, device, classifier):
       kept     = [(x, y, heat, prob|None)]
       suspects = [(x, y, heat, prob|None, reason)]
     """
-    heatmap = predict_heatmap(model, img_rgb, device, tiling=_TILING)
+    heatmap = predict_heatmap(model, img_rgb, device, tiling=_TILING, skip_blank=_SKIP_BLANK)
     if _STAGE2 is not None:
         pts, sus = stage2.run(heatmap, img_rgb, _STAGE2)
         H, W = heatmap.shape

@@ -12,7 +12,8 @@
     "excludeBorder": false,
     "bboxHeatThr": 0.4,
     "bboxPad": 50,
-    "clfProbThr": 0.5
+    "clfProbThr": 0.5,
+    "skipBlankTiles": true
   },
   "previous": {
     "file": "pupa_counter_lide300.pt",
