@@ -1,99 +1,61 @@
 /**
- * Scanner adapter.
- *
- * Windows: drives a real WIA scanner via PowerShell COM in the main
- * process. Outside Electron (browser preview) or on a non-Win platform
- * it falls back to a file picker so the rest of the UI still works.
- * The `ScanHandle` interface stays stable regardless of backend.
+ * Scanner adapter. Windows drives WIA, macOS drives ImageCaptureCore (both
+ * in the main process). Outside Electron it falls back to a file picker so
+ * the rest of the UI still works.
  */
-import type { ScanParams } from "../types";
+import { useSettings } from "../store/settingsStore";
 
 export interface ScanHandle {
   path: string;
   dataUrl: string;
   width: number;
   height: number;
+  requestedDpi?: number | null;
+  actualDpi?: number | null;
+  dpiSource?: string | null;
+  warnings?: string[];
 }
 
-const SETTINGS_KEY = "pupa.scanner.settings.v1";
-
-export interface ScannerSettings {
-  deviceId: string;
-  dpi: number;
-  mode: "color" | "grayscale";
-}
-
-export function loadScannerSettings(): ScannerSettings | null {
-  try {
-    const raw = localStorage.getItem(SETTINGS_KEY);
-    return raw ? (JSON.parse(raw) as ScannerSettings) : null;
-  } catch {
-    return null;
+export class NoScannerError extends Error {
+  constructor() {
+    super("No scanner found. Check the USB cable and power, then try again — or use Import to open an image file.");
+    this.name = "NoScannerError";
   }
 }
 
-export function saveScannerSettings(s: ScannerSettings): void {
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
-}
+export async function scanNow(): Promise<ScanHandle | null> {
+  if (!window.pupa) return browserFilePicker();
+  const settings = useSettings.getState();
+  let deviceId = settings.scanner.deviceId;
 
-export async function scanNow(paramsOverride?: Partial<ScanParams>): Promise<ScanHandle | null> {
-  // No Electron bridge → browser preview fallback.
-  if (!window.pupa) return await browserFilePicker();
-
-  // No real scanner API (older Electron main.js) → picker fallback, same as
-  // the original mock. Keeps dev loops working without a scanner hooked up.
-  if (!window.pupa.scanner) return await pickerFallback();
-
-  const settings = loadScannerSettings();
-  let deviceId = paramsOverride?.deviceId ?? settings?.deviceId ?? "";
-
-  // Verify the saved deviceId against the live WIA enumeration. Saved IDs
-  // go stale across re-plug / driver swaps (e.g. eSCL → legacy WIA), and a
-  // stale ID would 404 in scanner:scan. Caller-supplied overrides skip this.
-  if (!paramsOverride?.deviceId) {
-    const list = await window.pupa.scanner.listDevices();
-    const stillValid = deviceId && list.some((d) => d.id === deviceId);
-    if (!stillValid && list.length > 0) {
-      deviceId = list[0].id;
-      saveScannerSettings({
-        deviceId,
-        dpi: settings?.dpi ?? 300,
-        mode: settings?.mode ?? "color",
-      });
-    } else if (!stillValid) {
-      deviceId = "";
-    }
+  // Saved IDs go stale across re-plugs and driver swaps: check against the
+  // live list and fall back to the first scanner found.
+  const list = await window.pupa.scanner.listDevices();
+  if (!deviceId || !list.some((d) => d.id === deviceId)) {
+    if (list.length === 0) throw new NoScannerError();
+    deviceId = list[0].id;
+    settings.setScanner({ deviceId });
   }
 
-  if (!deviceId) return await pickerFallback();
-
-  const savedOutDir = localStorage.getItem("pupa.saveDir.v1") || undefined;
-  const params: ScanParams = {
+  const result = await window.pupa.scanner.scan({
     deviceId,
-    dpi: paramsOverride?.dpi ?? settings?.dpi ?? 300,
-    mode: paramsOverride?.mode ?? settings?.mode ?? "color",
-    outDir: paramsOverride?.outDir ?? savedOutDir,
-  };
-
-  const result = await window.pupa.scanner.scan(params);
+    dpi: settings.scanner.dpi,
+    mode: settings.scanner.mode,
+    outDir: settings.saveDir || undefined,
+  });
   const dataUrl = await window.pupa.file.readImageDataUrl(result.path);
   return {
     path: result.path,
     dataUrl,
     width: result.width,
     height: result.height,
+    requestedDpi: result.requestedDpi,
+    actualDpi: result.actualDpi,
+    dpiSource: result.dpiSource ?? "scanner",
+    warnings: result.warnings ?? [],
   };
 }
 
-async function pickerFallback(): Promise<ScanHandle | null> {
-  const path = await window.pupa!.dialog.openImage();
-  if (!path) return null;
-  const dataUrl = await window.pupa!.file.readImageDataUrl(path);
-  const dims = await getImageDims(dataUrl);
-  return { path, dataUrl, ...dims };
-}
-
-/** Load a specific file by path (used by "Load demo scan" button). */
 export async function loadScanFromPath(path: string): Promise<ScanHandle | null> {
   if (!window.pupa) return null;
   const dataUrl = await window.pupa.file.readImageDataUrl(path);
@@ -101,15 +63,22 @@ export async function loadScanFromPath(path: string): Promise<ScanHandle | null>
   return { path, dataUrl, ...dims };
 }
 
-export async function listDemoScans(): Promise<string[]> {
-  return window.pupa ? await window.pupa.file.listDemoScans() : [];
+export async function pickImageFile(): Promise<ScanHandle | null> {
+  if (!window.pupa) return browserFilePicker();
+  const path = await window.pupa.dialog.openImage();
+  if (!path) return null;
+  return loadScanFromPath(path);
 }
 
-function getImageDims(dataUrl: string): Promise<{ width: number; height: number }> {
+export async function listDemoScans(): Promise<string[]> {
+  return window.pupa ? window.pupa.file.listDemoScans() : [];
+}
+
+export function getImageDims(dataUrl: string): Promise<{ width: number; height: number }> {
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
-    img.onerror = () => resolve({ width: 1116, height: 2586 });
+    img.onerror = () => resolve({ width: 0, height: 0 });
     img.src = dataUrl;
   });
 }

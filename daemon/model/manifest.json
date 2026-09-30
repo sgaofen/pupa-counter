@@ -1,0 +1,16 @@
+{
+  "name": "LiDE 300 v4",
+  "file": "pupa_counter_lide300.pt",
+  "classifier": "peak_filter_clf_lide300.pkl",
+  "arch": "TinyUNet",
+  "trainDpi": 150,
+  "inference": {
+    "peakThr": 0.50,
+    "minDist": 3,
+    "bboxCrop": true,
+    "bboxHeatThr": 0.40,
+    "bboxPad": 50,
+    "clfProbThr": 0.50
+  },
+  "notes": "Trained on Canon LiDE 300 scans that were actually 150 DPI (1240x1753 A4) because the old WIA script silently failed to set 300 DPI. The daemon rescales any image whose DPI differs from trainDpi before inference and maps coordinates back to the original image."
+}

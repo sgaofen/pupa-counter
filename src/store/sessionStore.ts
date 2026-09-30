@@ -1,5 +1,10 @@
 import { create } from "zustand";
-import type { DetectionResult, Pupa, RankBand, Round, ScanRecord, Session } from "../types";
+import type {
+  Corner, DetectionResult, Pupa, Replicate, ScanMeta, ScanRecord, Session, SheetInfo,
+} from "../types";
+import { bandCounts, recomputeRanks, top5Count, withSheetPct } from "../lib/bands";
+import { normalizeSession } from "../lib/sessionSchema";
+import { startingGenotype, useSettings } from "./settingsStore";
 
 // sv-SE locale yields "YYYY-MM-DD HH:MM:SS"; pinned to LA wall-clock so
 // log timestamps stay readable for the lab even when scans happen on a
@@ -14,306 +19,270 @@ export function isoNow(): string {
   return LA_DT_FMT.format(new Date()).replace(",", "");
 }
 
-function bandFor(rankPct: number): RankBand {
-  if (rankPct < 5) return "0-5%";
-  if (rankPct < 25) return "5-25%";
-  if (rankPct < 75) return "25-75%";
-  return "75-100%";
+const DARK_KEY = "pupa.darkMode.v1";
+function readDark(): boolean {
+  try { return localStorage.getItem(DARK_KEY) === "1"; } catch { return false; }
 }
 
-function mulberry32(seed: number) {
-  return function () {
-    let t = (seed += 0x6d2b79f5);
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-/** Generates a deterministic-but-realistic pupa list for a scan, with
- *  band counts matching the `bands` parameter (best-effort). */
-function synthesizePupae(
-  seed: number,
-  bands: [number, number, number, number],
-  imageWidth: number,
-  imageHeight: number
-): Pupa[] {
-  const total = bands.reduce((a, b) => a + b, 0);
-  const rand = mulberry32(seed);
-  const pupae: Pupa[] = [];
-
-  const bandRanges: { min: number; max: number; target: number }[] = [
-    { min: 0, max: 5, target: bands[0] },
-    { min: 5, max: 25, target: bands[1] },
-    { min: 25, max: 75, target: bands[2] },
-    { min: 75, max: 100, target: bands[3] },
-  ];
-
-  let idx = 0;
-  for (const b of bandRanges) {
-    for (let i = 0; i < b.target; i++) {
-      const rankPct = b.min + rand() * (b.max - b.min);
-      const y = imageHeight - (rankPct / 100) * (imageHeight - 40) - 20;
-      const x = 40 + rand() * (imageWidth - 80);
-      pupae.push({
-        index: ++idx,
-        x: Math.round(x),
-        y: Math.round(y),
-        rankPct: Number(rankPct.toFixed(2)),
-        band: bandFor(rankPct),
-        source: "cnn",
-      });
-    }
-  }
-  // Shuffle order a bit so pupa_idx is not strictly sorted by band.
-  for (let i = pupae.length - 1; i > 0; i--) {
-    const j = Math.floor(rand() * (i + 1));
-    [pupae[i], pupae[j]] = [pupae[j], pupae[i]];
-  }
-  return pupae.map((p, i) => ({ ...p, index: i + 1 }));
-}
-
-function makeSample(
-  id: string,
-  roundNumber: number,
-  imageNumber: number,
-  timestamp: string,
-  total: number,
-  bands: [number, number, number, number],
-  genotype: string,
-  seed: number
-): ScanRecord {
-  const W = 1116, H = 2586;
-  const pupae = synthesizePupae(seed, bands, W, H);
+/** Metadata a fresh replicate starts with. Operator and experiment are
+ *  session-wide; genotype / comments / info filename reset. */
+export function defaultMeta(session: Session, replicateNumber: number): ScanMeta {
   return {
-    id,
-    roundNumber,
-    imageNumber,
-    timestamp,
-    imagePath: `/Users/stephenyu/Downloads/pupate_batch/Scan_20260313 (${imageNumber}).png`,
-    imageWidth: W,
-    imageHeight: H,
-    experiment: "B-cage pilot",
-    operator: "Sarah Ruckman",
-    genotype,
+    operator: session.operator || useSettings.getState().defaultOperator || "",
+    experiment: session.experiment || "",
+    genotype: startingGenotype(),
     comments: "",
-    infoFilename: `round${roundNumber}.asc`,
-    totalPupae: total,
-    top5PctCount: bands[0],
-    rank5To25Count: bands[1],
-    middle50Count: bands[2],
-    bottom25Count: bands[3],
-    yMin: Math.min(...pupae.map((p) => p.y)),
-    yMax: Math.max(...pupae.map((p) => p.y)),
-    manuallyEdited: false,
-    pupae,
+    infoFilename: `replicate${replicateNumber}.asc`,
   };
 }
 
-function makeSeedSession(): Session {
+function metaOf(r: ScanMeta): ScanMeta {
   return {
-    sessionId: "sess_2026-04-22",
-    operator: "Sarah Ruckman",
-    experiment: "B-cage pilot",
-    startedAt: "2026-04-22 13:02",
-    rounds: [
-      {
-        roundId: "r1", roundNumber: 1, startedAt: "2026-04-22 13:02",
-        scans: [
-          makeSample("s_004", 1, 4, "2026-04-22 14:20", 97, [5, 21, 47, 24], "w1118", 4),
-          makeSample("s_005", 1, 5, "2026-04-22 14:44", 102, [5, 22, 50, 25], "w1118", 5),
-        ],
-      },
-      {
-        roundId: "r2", roundNumber: 2, startedAt: "2026-04-22 17:00",
-        scans: [
-          makeSample("s_006", 2, 6, "2026-04-22 17:02", 69, [3, 14, 34, 18], "Cage A", 6),
-          makeSample("s_007", 2, 7, "2026-04-22 17:31", 77, [3, 15, 39, 20], "Cage A", 7),
-          makeSample("s_008", 2, 8, "2026-04-22 17:58", 83, [4, 17, 41, 21], "Cage A", 8),
-          makeSample("s_009", 2, 9, "2026-04-22 18:22", 88, [4, 19, 44, 21], "Cage A", 9),
-          makeSample("s_010", 2, 10, "2026-04-22 18:51", 94, [5, 20, 48, 21], "Cage A", 10),
-        ],
-      },
-      {
-        roundId: "r3", roundNumber: 3, startedAt: "2026-04-22 21:00",
-        scans: [
-          makeSample("s_011", 3, 11, "2026-04-22 21:05", 71, [4, 18, 34, 15], "Cage B", 11),
-          makeSample("s_012", 3, 12, "2026-04-22 21:28", 58, [2, 11, 30, 15], "Cage B", 12),
-          makeSample("s_013", 3, 13, "2026-04-22 21:47", 62, [3, 13, 31, 15], "Cage B", 13),
-        ],
-      },
-    ],
+    operator: r.operator ?? "", experiment: r.experiment ?? "", genotype: r.genotype ?? "",
+    comments: r.comments ?? "", infoFilename: r.infoFilename ?? "",
   };
 }
 
-interface PendingScanMeta {
-  operator: string;
-  experiment: string;
-  genotype: string;
-  comments: string;
-  infoFilename: string;
+/** What the next scan of `rep` starts with: whatever the replicate used
+ *  last (kept in `rep.meta`, else the last scan), otherwise the defaults. */
+function carriedMeta(session: Session, rep: Replicate | undefined): ScanMeta {
+  if (!rep) return defaultMeta(session, 1);
+  if (rep.meta) return metaOf(rep.meta);
+  const last = rep.scans[rep.scans.length - 1];
+  return last ? metaOf(last) : defaultMeta(session, rep.replicateNumber);
 }
 
 interface PendingScan {
   imagePath: string;
-  imageDataUrl: string | null;  // populated once file is read
+  imageDataUrl: string | null;
   imageNumber: number;
-  /** The round this scan was STARTED in. Commit always targets this
-   *  round even if the user switches to a different one mid-edit —
-   *  otherwise a scan that belongs to round N could silently end up
-   *  filed under N+1. */
-  roundId: string;
+  /** The replicate this scan was STARTED in. Commit always targets it,
+   *  even if the user starts a new replicate mid-edit. */
+  replicateId: string;
   detection: DetectionResult | null;
-  metadata: PendingScanMeta;
+  metadata: ScanMeta;
+  sheet: SheetInfo | null;
+  requestedDpi: number | null;
+  actualDpi: number | null;
+  dpiSource: string | null;
+  /** Dots the model found before any manual edit. */
+  cnnCount: number;
+}
+
+export interface ScanDpiInfo {
+  requestedDpi?: number | null;
+  actualDpi?: number | null;
+  dpiSource?: string | null;
+}
+
+function emptySession(): Session {
+  const now = isoNow();
+  return {
+    sessionId: "", operator: "", experiment: "", startedAt: now,
+    replicates: [{ replicateId: "r1", replicateNumber: 1, startedAt: now, scans: [] }],
+  };
 }
 
 interface SessionState {
   session: Session;
-  currentRoundId: string;
+  currentReplicateId: string;
+  draftMeta: ScanMeta;
   pendingScan: PendingScan | null;
   darkMode: boolean;
-  toast: string | null;
 
   setOperator: (name: string) => void;
   setExperiment: (name: string) => void;
   toggleDark: () => void;
-  setToast: (msg: string | null) => void;
-  startNewRound: () => void;
-  loadSession: (data: Session) => void;
+  startNewReplicate: () => void;
+  loadSession: (raw: unknown) => boolean;
 
-  beginPendingScan: (imagePath: string, imageDataUrl: string | null) => void;
+  beginPendingScan: (imagePath: string, imageDataUrl: string | null, dpi?: ScanDpiInfo) => void;
   setDetection: (d: DetectionResult) => void;
   setPendingPupae: (pupae: Pupa[]) => void;
-  updatePendingMeta: (m: Partial<PendingScanMeta>) => void;
+  setPendingSheet: (corners: Corner[] | null, confirmOnly?: boolean) => void;
+  updateMeta: (m: Partial<ScanMeta>) => void;
   commitPendingScan: () => ScanRecord | null;
   clearPendingScan: () => void;
 }
 
 export const useSessionStore = create<SessionState>((set, get) => ({
-  session: makeSeedSession(),
-  currentRoundId: "r3",
+  session: emptySession(),
+  currentReplicateId: "r1",
+  draftMeta: defaultMeta(emptySession(), 1),
   pendingScan: null,
-  darkMode: false,
-  toast: null,
+  darkMode: readDark(),
 
-  setOperator: (name) => set((s) => ({ session: { ...s.session, operator: name } })),
-  setExperiment: (name) => set((s) => ({ session: { ...s.session, experiment: name } })),
-  toggleDark: () => set((s) => ({ darkMode: !s.darkMode })),
-  setToast: (msg) => set({ toast: msg }),
+  setOperator: (name) => set((s) => ({
+    session: { ...s.session, operator: name },
+    draftMeta: { ...s.draftMeta, operator: name },
+    pendingScan: s.pendingScan ? { ...s.pendingScan, metadata: { ...s.pendingScan.metadata, operator: name } } : null,
+  })),
+  setExperiment: (name) => set((s) => ({
+    session: { ...s.session, experiment: name },
+    draftMeta: { ...s.draftMeta, experiment: name },
+    pendingScan: s.pendingScan ? { ...s.pendingScan, metadata: { ...s.pendingScan.metadata, experiment: name } } : null,
+  })),
+  toggleDark: () => set((s) => {
+    try { localStorage.setItem(DARK_KEY, s.darkMode ? "0" : "1"); } catch { /* ignore */ }
+    return { darkMode: !s.darkMode };
+  }),
 
-  loadSession: (data) => {
-    // Pick the latest round if any; else r1. Clears any in-flight pending
-    // scan so it can't accidentally land on the wrong session.
-    const rid = data.rounds[data.rounds.length - 1]?.roundId
-              ?? data.rounds[0]?.roundId
-              ?? "r1";
-    set({ session: data, currentRoundId: rid, pendingScan: null });
+  loadSession: (raw) => {
+    const data = normalizeSession(raw);
+    if (!data) return false;
+    // Latest replicate; clears any in-flight pending scan so it can't land
+    // on the wrong session.
+    const rep = data.replicates[data.replicates.length - 1];
+    set({ session: data, currentReplicateId: rep.replicateId, draftMeta: carriedMeta(data, rep), pendingScan: null });
+    return true;
   },
 
-  startNewRound: () => {
+  startNewReplicate: () => {
     const { session } = get();
-    const nextNumber = Math.max(0, ...session.rounds.map((r) => r.roundNumber)) + 1;
-    const newRound: Round = {
-      roundId: `r${nextNumber}`,
-      roundNumber: nextNumber,
-      startedAt: isoNow(),
-      scans: [],
-    };
+    const n = Math.max(0, ...session.replicates.map((r) => r.replicateNumber)) + 1;
+    const meta = defaultMeta(session, n);
+    const rep: Replicate = { replicateId: `r${n}`, replicateNumber: n, startedAt: isoNow(), meta, scans: [] };
     set({
-      session: { ...session, rounds: [...session.rounds, newRound] },
-      currentRoundId: newRound.roundId,
+      session: { ...session, replicates: [...session.replicates, rep] },
+      currentReplicateId: rep.replicateId,
+      draftMeta: meta,
     });
   },
 
-  beginPendingScan: (imagePath, imageDataUrl) => {
-    const { session, currentRoundId } = get();
-    const round = session.rounds.find((r) => r.roundId === currentRoundId) ?? session.rounds[0];
-    const lastImgNum = round && round.scans.length > 0
-      ? round.scans[round.scans.length - 1].imageNumber + 1
-      : 1;
+  beginPendingScan: (imagePath, imageDataUrl, dpi) => {
+    const { session, currentReplicateId, draftMeta } = get();
+    const rep = session.replicates.find((r) => r.replicateId === currentReplicateId) ?? session.replicates[0];
+    const next = rep && rep.scans.length > 0 ? Math.max(...rep.scans.map((s) => s.imageNumber)) + 1 : 1;
     set({
       pendingScan: {
         imagePath,
         imageDataUrl,
-        imageNumber: lastImgNum,
-        roundId: round?.roundId ?? "",
+        imageNumber: next,
+        replicateId: rep?.replicateId ?? "",
         detection: null,
-        metadata: {
-          operator: session.operator,
-          experiment: session.experiment,
-          genotype: "Cage B",
-          comments: "",
-          infoFilename: `round${round?.roundNumber ?? 1}.asc`,
-        },
+        metadata: { ...draftMeta },
+        sheet: null,
+        requestedDpi: dpi?.requestedDpi ?? null,
+        actualDpi: dpi?.actualDpi ?? null,
+        dpiSource: dpi?.dpiSource ?? null,
+        cnnCount: 0,
       },
     });
   },
 
-  setDetection: (d) => set((s) => ({
-    pendingScan: s.pendingScan ? { ...s.pendingScan, detection: d } : s.pendingScan,
-  })),
+  setDetection: (d) => set((s) => {
+    if (!s.pendingScan) return s;
+    const sheet = d.sheet ? { ...d.sheet, manual: false } : null;
+    return {
+      pendingScan: {
+        ...s.pendingScan,
+        detection: d,
+        sheet,
+        cnnCount: d.pupae.length,
+        actualDpi: s.pendingScan.actualDpi ?? d.imageDpi ?? null,
+        dpiSource: s.pendingScan.actualDpi ? s.pendingScan.dpiSource : d.imageDpiSource,
+      },
+    };
+  }),
 
   setPendingPupae: (pupae) => set((s) => {
     if (!s.pendingScan || !s.pendingScan.detection) return s;
-    const top5 = pupae.filter((p) => p.band === "0-5%").length;
-    const b25 = pupae.filter((p) => p.band === "5-25%").length;
-    const b75 = pupae.filter((p) => p.band === "25-75%").length;
-    const bot = pupae.filter((p) => p.band === "75-100%").length;
+    const list = recomputeRanks(pupae, s.pendingScan.sheet?.found ? s.pendingScan.sheet.corners : null);
+    const b = bandCounts(list);
     return {
       pendingScan: {
         ...s.pendingScan,
         detection: {
           ...s.pendingScan.detection,
-          pupae,
-          counts: { total: pupae.length, top5Pct: top5, rank5To25: b25, middle50: b75, bottom25: bot },
+          pupae: list,
+          counts: { total: list.length, ...b },
         },
       },
     };
   }),
 
-  updatePendingMeta: (m) => set((s) => s.pendingScan
-    ? { pendingScan: { ...s.pendingScan, metadata: { ...s.pendingScan.metadata, ...m } } }
-    : s),
+  setPendingSheet: (corners, confirmOnly) => set((s) => {
+    const p = s.pendingScan;
+    if (!p || !p.detection) return s;
+    if (!corners) {
+      // Back to what the detector found.
+      const orig = p.detection.sheet ? { ...p.detection.sheet, manual: false } : null;
+      return {
+        pendingScan: {
+          ...p, sheet: orig,
+          detection: { ...p.detection, pupae: withSheetPct(p.detection.pupae, orig?.found ? orig.corners : null) },
+        },
+      };
+    }
+    const sheet: SheetInfo = { ...(p.sheet ?? { found: true, method: "manual" }), found: true, corners, manual: true, ...geometry(corners) };
+    if (confirmOnly && p.sheet) sheet.confidence = p.sheet.confidence;
+    return {
+      pendingScan: { ...p, sheet, detection: { ...p.detection, pupae: withSheetPct(p.detection.pupae, corners) } },
+    };
+  }),
+
+  updateMeta: (m) => set((s) => {
+    const draftMeta = { ...s.draftMeta, ...m };
+    // Remember the values on the replicate so the next scan (and the next
+    // app start) begins from them.
+    const targetRep = s.pendingScan?.replicateId || s.currentReplicateId;
+    let session = {
+      ...s.session,
+      replicates: s.session.replicates.map((r) => (r.replicateId === targetRep ? { ...r, meta: draftMeta } : r)),
+    };
+    if (m.operator !== undefined) session = { ...session, operator: m.operator };
+    if (m.experiment !== undefined) session = { ...session, experiment: m.experiment };
+    return {
+      draftMeta,
+      session,
+      pendingScan: s.pendingScan ? { ...s.pendingScan, metadata: { ...s.pendingScan.metadata, ...m } } : null,
+    };
+  }),
 
   commitPendingScan: () => {
     const { pendingScan, session } = get();
     if (!pendingScan || !pendingScan.detection) return null;
-    // Always file the scan under the round it was STARTED in — not
-    // whatever the user switched to later. Falls back to currentRoundId
-    // only for hand-constructed payloads that somehow lack roundId.
-    const targetRoundId = pendingScan.roundId || get().currentRoundId;
-    const round = session.rounds.find((r) => r.roundId === targetRoundId);
-    if (!round) return null;
+    const targetId = pendingScan.replicateId || get().currentReplicateId;
+    const rep = session.replicates.find((r) => r.replicateId === targetId);
+    if (!rep) return null;
     const d = pendingScan.detection;
-    const manuallyEdited = d.pupae.some((p) => p.source === "manual");
+    const cnnLeft = d.pupae.filter((p) => p.source === "cnn").length;
+    const originalCnn = pendingScan.cnnCount;
     const record: ScanRecord = {
-      id: `s_${String(Math.floor(Math.random() * 100000)).padStart(5, "0")}`,
-      roundNumber: round.roundNumber,
+      ...pendingScan.metadata,
+      id: `s_${Date.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36).padStart(2, "0")}`,
+      replicateNumber: rep.replicateNumber,
       imageNumber: pendingScan.imageNumber,
       timestamp: isoNow(),
       imagePath: pendingScan.imagePath,
       imageWidth: d.imageWidth,
       imageHeight: d.imageHeight,
-      experiment: pendingScan.metadata.experiment,
-      operator: pendingScan.metadata.operator,
-      genotype: pendingScan.metadata.genotype,
-      comments: pendingScan.metadata.comments,
-      infoFilename: pendingScan.metadata.infoFilename,
       totalPupae: d.counts.total,
+      top5Selected: top5Count(d.counts.total),
       top5PctCount: d.counts.top5Pct,
       rank5To25Count: d.counts.rank5To25,
       middle50Count: d.counts.middle50,
       bottom25Count: d.counts.bottom25,
-      yMin: d.yMin,
-      yMax: d.yMax,
-      manuallyEdited,
+      yMin: d.pupae.length ? Math.min(...d.pupae.map((p) => p.y)) : null,
+      yMax: d.pupae.length ? Math.max(...d.pupae.map((p) => p.y)) : null,
+      manuallyEdited: d.pupae.some((p) => p.source === "manual") || cnnLeft < originalCnn,
       pupae: d.pupae,
+      cnnCount: originalCnn,
+      requestedDpi: pendingScan.requestedDpi,
+      actualDpi: pendingScan.actualDpi,
+      dpiSource: pendingScan.dpiSource,
+      trainDpi: d.trainDpi,
+      inferenceScale: d.inferenceScale,
+      modelVersion: d.modelVersion,
+      sheet: pendingScan.sheet,
+      suspects: d.suspects,
     };
-    const updatedRounds = session.rounds.map((r) =>
-      r.roundId === targetRoundId ? { ...r, scans: [...r.scans, record] } : r
-    );
     set({
-      session: { ...session, rounds: updatedRounds },
+      session: {
+        ...session,
+        replicates: session.replicates.map((r) =>
+          r.replicateId === targetId ? { ...r, meta: pendingScan.metadata, scans: [...r.scans, record] } : r),
+      },
       pendingScan: null,
     });
     return record;
@@ -321,3 +290,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   clearPendingScan: () => set({ pendingScan: null }),
 }));
+
+function geometry(c: Corner[]) {
+  const [tl, tr, br, bl] = c;
+  const ax = (tl[0] + tr[0]) / 2 - (bl[0] + br[0]) / 2;
+  const ay = (tl[1] + tr[1]) / 2 - (bl[1] + br[1]) / 2;
+  const widthPx = (Math.hypot(tr[0] - tl[0], tr[1] - tl[1]) + Math.hypot(br[0] - bl[0], br[1] - bl[1])) / 2;
+  return {
+    lengthPx: Math.round(Math.hypot(ax, ay) * 10) / 10,
+    widthPx: Math.round(widthPx * 10) / 10,
+    angleDeg: Math.round((Math.atan2(ax, -ay) * 18000) / Math.PI) / 100,
+  };
+}
+
+export function currentReplicate(s: { session: Session; currentReplicateId: string }): Replicate {
+  return s.session.replicates.find((r) => r.replicateId === s.currentReplicateId)
+    ?? s.session.replicates[s.session.replicates.length - 1];
+}

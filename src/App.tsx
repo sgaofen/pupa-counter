@@ -1,35 +1,50 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { TitleBar } from "./components/TitleBar";
 import { TopNav, type TabName } from "./components/TopNav";
 import { ScanView } from "./pages/ScanView";
 import { DatabaseView } from "./pages/DatabaseView";
 import { SettingsView } from "./pages/SettingsView";
 import { useSessionStore } from "./store/sessionStore";
+import { useSettings } from "./store/settingsStore";
+import { serializeSession } from "./lib/sessionSchema";
+
+export type ToastTone = "good" | "warn" | "bad";
+export interface SaveStatus { state: "idle" | "saving" | "saved" | "error"; at?: number; error?: string }
 
 export function App() {
   const darkMode = useSessionStore((s) => s.darkMode);
   const toggleDark = useSessionStore((s) => s.toggleDark);
   const operator = useSessionStore((s) => s.session.operator);
-  const initials = operator.split(/\s+/).map((p) => p[0]).join("").slice(0, 2).toUpperCase();
+  const initials = operator.split(/\s+/).filter(Boolean).map((p) => p[0]).join("").slice(0, 2).toUpperCase();
 
   const [tab, setTab] = useState<TabName>("Scan");
-  const [toast, setToast] = useState<string | null>(null);
+  const [toast, setToastState] = useState<{ msg: string; tone: ToastTone; id: number } | null>(null);
   const [hydrated, setHydrated] = useState(false);
+  const [save, setSave] = useState<SaveStatus>({ state: "idle" });
+  const saveTimer = useRef<number | null>(null);
 
-  // Hydrate the session store from userData/session.json on mount.
-  // Falls back to the seeded demo session if the file is missing or
-  // malformed. Only flips `hydrated=true` after this runs so we don't
-  // persist the un-hydrated seed over a valid saved file.
+  const showToast = (msg: string | null, tone: ToastTone = "good") =>
+    setToastState(msg ? { msg, tone, id: Date.now() } : null);
+
+  // Hydrate from <userData>/sessions (most recent file). A fresh install
+  // gets a new, empty session instead of the old synthetic demo data.
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      const st = useSessionStore.getState();
       try {
-        const saved = await window.pupa?.session.load?.();
-        if (!cancelled && saved && saved.sessionId && Array.isArray(saved.rounds)) {
-          useSessionStore.getState().loadSession(saved);
+        if (!window.pupa) {
+          st.loadSession({ sessionId: "browser-preview", operator: "", experiment: "", startedAt: "", rounds: [] });
+        } else {
+          let raw = await window.pupa.session.load();
+          if (!raw || !st.loadSession(raw)) {
+            raw = await window.pupa.session.create({ operator: useSettings.getState().defaultOperator });
+            st.loadSession(raw);
+          }
         }
       } catch (err) {
         console.warn("[session] hydrate failed:", err);
+        showToast(`Could not open the last session: ${String(err)}`, "bad");
       } finally {
         if (!cancelled) setHydrated(true);
       }
@@ -37,40 +52,39 @@ export function App() {
     return () => { cancelled = true; };
   }, []);
 
-  // Persist after every session mutation. Guarded by `hydrated` so the
-  // initial seed doesn't overwrite a good on-disk session before we've
-  // had a chance to load it.
+  // Persist after every session change (debounced, atomic write in main).
+  // Guarded by `hydrated` so nothing is written before the file is loaded.
   useEffect(() => {
     if (!hydrated || !window.pupa?.session?.save) return;
-    // Subscribe — sessionStore updates the `session` object by
-    // replacement, so a referential-equality subscribe fires on every
-    // meaningful mutation (including commitPendingScan, startNewRound,
-    // setOperator, setExperiment).
-    const unsub = useSessionStore.subscribe((state, prev) => {
-      if (state.session !== prev.session) {
-        window.pupa!.session.save(state.session).catch((err: unknown) => {
-          console.warn("[session] save failed:", err);
-        });
+    const flush = async () => {
+      const session = useSessionStore.getState().session;
+      if (!session.sessionId) return;
+      try {
+        const res = await window.pupa!.session.save(serializeSession(session));
+        setSave({ state: "saved", at: res?.savedAt ?? Date.now() });
+      } catch (err) {
+        console.warn("[session] save failed:", err);
+        setSave({ state: "error", error: String(err) });
+        showToast(`Saving failed: ${String(err)}`, "bad");
       }
+    };
+    const unsub = useSessionStore.subscribe((state, prev) => {
+      if (state.session === prev.session) return;
+      if (state.session.sessionId !== prev.session.sessionId) return; // switched session, nothing edited
+      setSave({ state: "saving" });
+      if (saveTimer.current) window.clearTimeout(saveTimer.current);
+      saveTimer.current = window.setTimeout(flush, 250);
     });
-    return unsub;
+    const onUnload = () => { if (saveTimer.current) { window.clearTimeout(saveTimer.current); flush(); } };
+    window.addEventListener("beforeunload", onUnload);
+    return () => { unsub(); window.removeEventListener("beforeunload", onUnload); };
   }, [hydrated]);
 
   useEffect(() => {
     if (!toast) return;
-    const t = setTimeout(() => setToast(null), 2400);
+    const t = setTimeout(() => setToastState(null), toast.tone === "bad" ? 6000 : 2800);
     return () => clearTimeout(t);
   }, [toast]);
-
-  // ⌘S / ⌘P keyboard hooks (lightweight, no dependency).
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey)) return;
-      if (e.key.toLowerCase() === "p") { e.preventDefault(); /* TODO: trigger process */ }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
 
   return (
     <div className="app-root" data-theme={darkMode ? "dark" : "light"}>
@@ -81,17 +95,19 @@ export function App() {
           onTabChange={setTab}
           darkMode={darkMode}
           onToggleDark={toggleDark}
-          operatorInitials={initials || "SR"}
-          onToast={setToast}
+          operatorInitials={initials || "—"}
+          onToast={showToast}
+          save={save}
         />
-        {tab === "Scan" && <ScanView onNavigate={setTab} onToast={setToast} />}
-        {tab === "Database" && <DatabaseView />}
-        {tab === "Settings" && <SettingsView onToast={setToast} />}
+        {!hydrated ? <div style={{ flex: 1 }} />
+          : tab === "Scan" ? <ScanView onNavigate={setTab} onToast={showToast} />
+          : tab === "Database" ? <DatabaseView onToast={showToast} onNavigate={setTab} />
+          : <SettingsView onToast={showToast} />}
       </div>
       {toast && (
-        <div className="toast good">
+        <div key={toast.id} className={`toast ${toast.tone}`} role="status">
           <span className="dot" />
-          <span>{toast}</span>
+          <span>{toast.msg}</span>
         </div>
       )}
     </div>

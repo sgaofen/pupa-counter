@@ -13,3 +13,6 @@ daemon/__pycache__/
 daemon/**/__pycache__/
 daemon/*.pyc
 daemon/output/
+
+# macOS scanner CLI build output (npm run build:icscan)
+electron/scanner/mac/bin/

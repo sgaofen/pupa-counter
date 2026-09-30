@@ -72,12 +72,12 @@ The version comes from `package.json`'s `version` field — bump it
 
 1. Double-click `release\Pupa Counter Setup <version>.exe`.
 2. Install to the default location, launch.
-3. Drag any 300 dpi LiDE PNG onto the canvas. Detection should
-   complete in ~1 s and you should see green dots.
+3. Drag any LiDE PNG (for example a 1240 × 1753, 150 DPI scan) onto the
+   canvas. Counting should finish in ~1 s and you should see green rings.
 4. The MOCK badge must **not** appear — that means the Python daemon
    started cleanly with the bundled runtime.
-5. Click **Save to database**, restart the app, confirm the scan is
-   still there (sessions persist under `%APPDATA%\Pupa Counter\sessions\`).
+5. The scan is saved automatically (v0.5+). Restart the app and confirm
+   it is still listed under the current replicate (sessions persist under `%APPDATA%\Pupa Counter\sessions\`).
 
 If MOCK appears or detection fails, look at the DevTools console (the
 packaged build opens it automatically if you ran `npm run dev` first to
@@ -175,7 +175,8 @@ If you've just retrained the CNN and want existing installs on the v3
 .exe to get the new weights without a full re-install:
 
 1. Drop new `pupa_counter_lide300.pt` + `peak_filter_clf_lide300.pkl`
-   into a small zip.
+   (and an updated `manifest.json` if the training DPI or thresholds
+   changed) into a small zip.
 2. User extracts them into
    `C:\Users\<user>\AppData\Local\Programs\Pupa Counter\resources\python-pipeline\model\`
    (overwriting).

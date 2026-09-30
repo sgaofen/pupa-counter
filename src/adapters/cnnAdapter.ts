@@ -1,22 +1,15 @@
 /**
  * CNN detection adapter.
  *
- * Contract with the UI:
- *   • In Electron (window.pupa.cnn.detect exists) we run the REAL V12 +
- *     clf_v5 pipeline via a persistent Python worker. If that worker
- *     fails we THROW — never silently fall back to a mock. The UI is
- *     responsible for catching the error, showing it to the operator,
- *     and keeping the Save button disabled so fabricated data cannot
- *     end up in the database.
- *   • Outside Electron (plain `vite` in a browser tab) there is no
- *     Python available, so we return a deterministic mock. Every mock
- *     response is clearly tagged in `modelVersion` so it cannot be
- *     confused with a real detection.
- *   • Explicit opt-in: passing VITE_CNN_MOCK=1 at build time or setting
- *     window.__PUPA_FORCE_MOCK__ = true in the renderer forces the mock
- *     path even inside Electron (useful for UI-only demos).
+ *  • In Electron we call the real Python daemon. If it fails we THROW —
+ *    never fall back to fake data. The UI shows the error and nothing is
+ *    saved.
+ *  • Outside Electron (plain `vite` in a browser tab) there is no Python,
+ *    so we return a clearly tagged mock. Mock results are never saved.
+ *  • VITE_CNN_MOCK=1 or window.__PUPA_FORCE_MOCK__ = true forces the mock.
  */
-import type { DetectionResult, Pupa, RankBand } from "../types";
+import type { DetectionResult, Pupa } from "../types";
+import { recomputeRanks } from "../lib/bands";
 
 export class CnnUnavailableError extends Error {
   constructor(message: string, public cause?: unknown) {
@@ -25,61 +18,58 @@ export class CnnUnavailableError extends Error {
   }
 }
 
-function bandFor(rankPct: number): RankBand {
-  if (rankPct < 5) return "0-5%";
-  if (rankPct < 25) return "5-25%";
-  if (rankPct < 75) return "25-75%";
-  return "75-100%";
-}
-
 function mockEnabled(): boolean {
-  // Flag set by either Vite env or a renderer-global for live toggling.
   try {
     if ((globalThis as any).__PUPA_FORCE_MOCK__ === true) return true;
     const env = (import.meta as any).env;
     if (env && env.VITE_CNN_MOCK === "1") return true;
-  } catch {}
+  } catch { /* ignore */ }
   return false;
+}
+
+export function isMockModel(modelVersion?: string | null): boolean {
+  if (!modelVersion) return false;
+  const m = modelVersion.toLowerCase();
+  return m.includes("mock") || m.includes("synthetic");
 }
 
 export async function runDetection(
   imagePath: string,
-  imageWidth: number = 1116,
-  imageHeight: number = 2586
+  opts: { dpi?: number | null; width?: number; height?: number } = {}
 ): Promise<DetectionResult> {
   const inElectron = !!window.pupa?.cnn?.detect;
-
   if (inElectron && !mockEnabled()) {
     const t0 = performance.now();
-    let raw;
+    let raw: any;
     try {
-      raw = await window.pupa!.cnn.detect(imagePath);
+      raw = await window.pupa!.cnn.detect(imagePath, { dpi: opts.dpi ?? null });
     } catch (err) {
-      // Rethrow so the caller knows detection failed. Do NOT fall
-      // through to mock — fabricated data must never reach the DB.
       throw new CnnUnavailableError(
-        `CNN worker failed: ${err instanceof Error ? err.message : String(err)}`,
+        `The counting engine failed: ${err instanceof Error ? err.message.replace(/^Error invoking remote method '[^']+': /, "") : String(err)}`,
         err,
       );
     }
-    const durationMs = Math.round(performance.now() - t0);
     return {
       imageWidth: raw.imageWidth,
       imageHeight: raw.imageHeight,
       pupae: raw.pupae,
+      suspects: raw.suspects ?? [],
+      sheet: raw.sheet ?? null,
       counts: raw.counts,
       yMin: raw.yMin,
       yMax: raw.yMax,
+      imageDpi: raw.imageDpi ?? null,
+      imageDpiSource: raw.imageDpiSource ?? null,
+      trainDpi: raw.trainDpi ?? null,
+      inferenceScale: raw.inferenceScale ?? null,
       modelVersion: raw.modelVersion,
-      durationMs,
+      durationMs: Math.round(performance.now() - t0),
     };
   }
-
-  // Browser-only preview OR explicit mock override. Make it obvious.
-  return mockDetection(imagePath, imageWidth, imageHeight);
+  return mockDetection(imagePath, opts.width ?? 1240, opts.height ?? 1753);
 }
 
-// ---- mock fallback (browser-only preview or explicit opt-in) --------------
+// ---- mock (browser preview / explicit opt-in) ------------------------------------
 
 function mulberry32(seed: number) {
   return function () {
@@ -90,44 +80,39 @@ function mulberry32(seed: number) {
   };
 }
 
-async function mockDetection(
-  imagePath: string,
-  imageWidth: number,
-  imageHeight: number
-): Promise<DetectionResult> {
-  const seedBase = Array.from(imagePath).reduce((a, c) => a + c.charCodeAt(0), 0);
-  const rand = mulberry32(seedBase);
+async function mockDetection(imagePath: string, w: number, h: number): Promise<DetectionResult> {
+  const rand = mulberry32(Array.from(imagePath).reduce((a, c) => a + c.charCodeAt(0), 0));
   const n = 55 + Math.floor(rand() * 30);
-  const pupae: Pupa[] = [];
+  const cx = w * 0.5, top = h * 0.2, len = h * 0.6, half = w * 0.12;
+  const raw: Pupa[] = [];
   for (let i = 0; i < n; i++) {
-    const x = 40 + Math.floor(rand() * (imageWidth - 80));
-    const y = 50 + Math.floor(rand() * (imageHeight - 100));
-    pupae.push({ index: i + 1, x, y, rankPct: 0, band: "25-75%", source: "cnn" });
+    raw.push({
+      index: i + 1,
+      x: Math.round(cx + (rand() - 0.5) * 2 * half),
+      y: Math.round(top + Math.pow(rand(), 0.7) * len),
+      rankPct: 0, band: "25-75%", source: "cnn",
+    });
   }
+  const corners: [number, number][] = [
+    [cx - half - 20, top - 30], [cx + half + 20, top - 30],
+    [cx + half + 20, top + len + 30], [cx - half - 20, top + len + 30],
+  ];
+  const pupae = recomputeRanks(raw, corners);
   const ys = pupae.map((p) => p.y);
-  const yMin = Math.min(...ys);
-  const yMax = Math.max(...ys);
-  const yRange = Math.max(1, yMax - yMin);
-  for (const p of pupae) {
-    p.rankPct = Number(((yMax - p.y) / yRange * 100).toFixed(2));
-    p.band = bandFor(p.rankPct);
-  }
-  const counts = {
-    total: pupae.length,
-    top5Pct: pupae.filter((p) => p.band === "0-5%").length,
-    rank5To25: pupae.filter((p) => p.band === "5-25%").length,
-    middle50: pupae.filter((p) => p.band === "25-75%").length,
-    bottom25: pupae.filter((p) => p.band === "75-100%").length,
-  };
-  await new Promise((r) => setTimeout(r, 400));
+  await new Promise((r) => setTimeout(r, 300));
   return {
-    imageWidth,
-    imageHeight,
-    pupae,
-    counts,
-    yMin,
-    yMax,
-    modelVersion: "MOCK — synthetic data, NOT a real detection",
-    durationMs: 400,
+    imageWidth: w, imageHeight: h, pupae, suspects: [],
+    sheet: { found: true, corners, confidence: 0.3, method: "mock" },
+    counts: {
+      total: pupae.length,
+      top5Pct: pupae.filter((p) => p.band === "0-5%").length,
+      rank5To25: pupae.filter((p) => p.band === "5-25%").length,
+      middle50: pupae.filter((p) => p.band === "25-75%").length,
+      bottom25: pupae.filter((p) => p.band === "75-100%").length,
+    },
+    yMin: Math.min(...ys), yMax: Math.max(...ys),
+    imageDpi: 150, imageDpiSource: "assumed", trainDpi: 150, inferenceScale: 1,
+    modelVersion: "MOCK — synthetic data, not a real detection",
+    durationMs: 300,
   };
 }

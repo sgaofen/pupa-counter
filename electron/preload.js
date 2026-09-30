@@ -1,5 +1,5 @@
-// Preload — exposes a narrow, typed-looking API to the renderer.
-const { contextBridge, ipcRenderer } = require("electron");
+// Preload — exposes a narrow API to the renderer (typed in src/types.ts).
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 contextBridge.exposeInMainWorld("pupa", {
   session: {
@@ -15,14 +15,31 @@ contextBridge.exposeInMainWorld("pupa", {
   },
   file: {
     readImageDataUrl: (path) => ipcRenderer.invoke("file:readImageDataUrl", path),
+    exists: (path) => ipcRenderer.invoke("file:exists", path),
     listDemoScans: () => ipcRenderer.invoke("file:listDemoScans"),
+    // Absolute path of a dropped File (File.path is gone in newer Electron).
+    pathForFile: (file) => {
+      try { return webUtils ? webUtils.getPathForFile(file) : file.path || ""; }
+      catch { return file.path || ""; }
+    },
   },
   cnn: {
-    detect: (imagePath) => ipcRenderer.invoke("cnn:detect", imagePath),
+    detect: (imagePath, opts) => ipcRenderer.invoke("cnn:detect", imagePath, opts),
     info: () => ipcRenderer.invoke("cnn:info"),
   },
   scanner: {
     listDevices: () => ipcRenderer.invoke("scanner:listDevices"),
     scan: (params) => ipcRenderer.invoke("scanner:scan", params),
+  },
+  exporter: {
+    text: (args) => ipcRenderer.invoke("export:text", args),
+    xlsx: (args) => ipcRenderer.invoke("export:xlsx", args),
+  },
+  shell: {
+    showItemInFolder: (p) => ipcRenderer.invoke("shell:showItemInFolder", p),
+    openPath: (p) => ipcRenderer.invoke("shell:openPath", p),
+  },
+  app: {
+    paths: () => ipcRenderer.invoke("app:paths"),
   },
 });
