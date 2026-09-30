@@ -140,8 +140,17 @@ def device_description(device: torch.device) -> str:
 
 
 def predict_heatmap(model: TinyUNet, img_rgb: np.ndarray, device: torch.device,
-                    patch: int = PATCH_SIZE, stride: int = STRIDE) -> np.ndarray:
-    """Tile the full scan, run the model per tile, average overlapping regions."""
+                    patch: int = PATCH_SIZE, stride: int = STRIDE,
+                    tiling: str = "padded") -> np.ndarray:
+    """Tile the full scan, run the model per tile, average overlapping regions.
+
+    tiling="padded"  : legacy v3/v4 behaviour (edge tiles reflect-padded).
+    tiling="aligned" : last row/column of tiles is shifted to end flush with
+                       the image edge, so no padding is ever used. This is how
+                       the v5 model was trained and evaluated.
+    """
+    if tiling == "aligned":
+        return _predict_heatmap_aligned(model, img_rgb, device, patch, stride)
     h, w = img_rgb.shape[:2]
     heat = np.zeros((h, w), dtype=np.float32)
     count = np.zeros((h, w), dtype=np.float32)
@@ -170,11 +179,36 @@ def predict_heatmap(model: TinyUNet, img_rgb: np.ndarray, device: torch.device,
     return heat / np.maximum(count, 1)
 
 
+def _predict_heatmap_aligned(model, img_rgb: np.ndarray, device: torch.device,
+                             patch: int, stride: int) -> np.ndarray:
+    h, w = img_rgb.shape[:2]
+    ys = sorted(set(list(range(0, max(1, h - patch), stride)) + [max(0, h - patch)]))
+    xs = sorted(set(list(range(0, max(1, w - patch), stride)) + [max(0, w - patch)]))
+    heat = np.zeros((h, w), dtype=np.float32)
+    count = np.zeros((h, w), dtype=np.float32)
+    model.eval()
+    with torch.no_grad():
+        for y0 in ys:
+            for x0 in xs:
+                tile = img_rgb[y0:y0 + patch, x0:x0 + patch]
+                th, tw = tile.shape[:2]
+                if th < patch or tw < patch:  # image smaller than one tile
+                    tile = np.pad(tile, ((0, patch - th), (0, patch - tw), (0, 0)), mode="reflect")
+                x_tensor = torch.from_numpy(tile.astype(np.float32) / 255.0) \
+                    .permute(2, 0, 1).unsqueeze(0).to(device)
+                pred = model(x_tensor).squeeze().cpu().numpy()
+                heat[y0:y0 + th, x0:x0 + tw] += pred[:th, :tw]
+                count[y0:y0 + th, x0:x0 + tw] += 1
+    return heat / np.maximum(count, 1)
+
+
 def extract_peaks(heatmap: np.ndarray,
                   threshold: float = PEAK_THRESHOLD,
-                  min_dist: int = PEAK_MIN_DIST) -> list[tuple[int, int]]:
+                  min_dist: int = PEAK_MIN_DIST,
+                  exclude_border: bool = True) -> list[tuple[int, int]]:
     """Extract (x, y) peak locations from heatmap."""
-    coords = peak_local_max(heatmap, min_distance=min_dist, threshold_abs=threshold)
+    coords = peak_local_max(heatmap, min_distance=min_dist, threshold_abs=threshold,
+                            exclude_border=exclude_border)
     return [(int(x), int(y)) for y, x in coords]
 
 

@@ -1,16 +1,36 @@
 {
-  "name": "LiDE 300 v4",
-  "file": "pupa_counter_lide300.pt",
-  "classifier": "peak_filter_clf_lide300.pkl",
+  "name": "LiDE 300 v5 + stage 2",
+  "file": "pupa_counter_lide300_v5.pt",
+  "classifier": null,
   "arch": "TinyUNet",
   "trainDpi": 150,
   "inference": {
-    "peakThr": 0.50,
+    "peakThr": 0.325,
     "minDist": 3,
-    "bboxCrop": true,
-    "bboxHeatThr": 0.40,
+    "bboxCrop": false,
+    "tiling": "aligned",
+    "excludeBorder": false,
+    "bboxHeatThr": 0.4,
     "bboxPad": 50,
-    "clfProbThr": 0.50
+    "clfProbThr": 0.5
   },
-  "notes": "Trained on Canon LiDE 300 scans that were actually 150 DPI (1240x1753 A4) because the old WIA script silently failed to set 300 DPI. The daemon rescales any image whose DPI differs from trainDpi before inference and maps coordinates back to the original image."
+  "previous": {
+    "file": "pupa_counter_lide300.pt",
+    "classifier": "peak_filter_clf_lide300.pkl",
+    "inference": {
+      "peakThr": 0.5,
+      "minDist": 3,
+      "bboxCrop": true,
+      "clfProbThr": 0.5
+    }
+  },
+  "notes": "v5 (2026-09-29): same TinyUNet architecture retrained with focal loss on 328 scans (5/22 Top Offspring + Jul-Sep exports, Sarah's labels), no GBM filter. Held-out test (35 scans: 9/28 Rep 2 + 8/10): F1 96.5 vs 95.6 for v4; dark-pupa recall 92 vs 89, count bias -0.6 vs -4.5 per scan (duplicate-merged scoring). All scans so far are actually 150 DPI; the daemon rescales other DPIs to trainDpi before inference. Stage 2 (2026-09-29): held-out test with the user-reviewed labels F1 97.4 vs 96.8 (v5 alone) vs 95.5 (v4); count bias -1.2 vs -4.1 vs -7.9 pupae per scan; both pupae of an overlapping pair found 71% vs 54% vs 38%.",
+  "stage2": {
+    "file": "stage2_clf_v5.pkl",
+    "cand_thr": 0.1,
+    "t_keep": 0.275,
+    "t2": 0.25,
+    "dist": 3.5,
+    "note": "HistGradientBoosting (sklearn 1.6.1) on 62 features per heatmap local max: predicts 0/1/2/3+ pupae per blob; filters white larvae / faint false positives and splits overlapping pupae. When present, peakThr/minDist/bboxCrop/classifier are not used."
+  }
 }

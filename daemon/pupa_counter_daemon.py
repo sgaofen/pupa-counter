@@ -58,8 +58,10 @@ from pupa_counter import (  # type: ignore
     device_description,
 )
 
+import stage2  # type: ignore
+
 try:
-    import sheet_detect  # type: ignore
+    import sheet_detect
 except Exception:  # pragma: no cover - sheet detection is optional
     sheet_detect = None
 
@@ -115,6 +117,9 @@ _BBOX_CROP = os.environ.get("PUPA_BBOX_CROP", "1" if _INF.get("bboxCrop", True) 
 _BBOX_HEAT_THR = _envf("PUPA_BBOX_HEAT_THR", _INF.get("bboxHeatThr", 0.40))
 _BBOX_PAD = int(_envf("PUPA_BBOX_PAD", _INF.get("bboxPad", 50)))
 _CLF_PROB_THR = _envf("PUPA_CLF_PROB_THR", _INF.get("clfProbThr", 0.50))
+_STAGE2 = None  # loaded in main() when the manifest has a "stage2" block
+_TILING = _INF.get("tiling", "padded")
+_EXCLUDE_BORDER = bool(_INF.get("excludeBorder", True))
 TRAIN_DPI = int(_envf("PUPA_TRAIN_DPI", MANIFEST.get("trainDpi", 150)))
 
 
@@ -233,7 +238,9 @@ def compute_ranks(peaks):
 def main() -> None:
     try:
         model_path = _resolve("PUPA_MODEL_PATH", HERE / "model" / MANIFEST["file"])
-        clf_path = _resolve("PUPA_CLF_PATH", HERE / "model" / MANIFEST["classifier"])
+        clf_name = MANIFEST.get("classifier")
+        clf_path = (_resolve("PUPA_CLF_PATH", HERE / "model" / clf_name)
+                    if clf_name or os.environ.get("PUPA_CLF_PATH") else None)
         if not model_path.exists():
             raise FileNotFoundError(f"model weights not found: {model_path}")
         device = pick_device()
@@ -241,9 +248,18 @@ def main() -> None:
         model.load_state_dict(torch.load(model_path, map_location=device))
         model.eval()
         classifier = None
-        if clf_path.exists():
+        if clf_path is not None and clf_path.exists():
             with open(clf_path, "rb") as f:
                 classifier = pickle.load(f)
+        global _STAGE2
+        st2 = MANIFEST.get("stage2")
+        if st2:
+            with open(_resolve("PUPA_STAGE2_PATH", HERE / "model" / st2["file"]), "rb") as f:
+                bundle = pickle.load(f)
+            for k in ("cand_thr", "t_keep", "t2", "dist"):
+                if k in st2:
+                    bundle[k] = st2[k]
+            _STAGE2 = bundle
     except Exception as exc:
         sys.stdout.write(json.dumps({
             "ready": False, "stage": "startup",
@@ -259,7 +275,8 @@ def main() -> None:
         "deviceName": device_description(device),
         "model": model_path.name,
         "modelName": MANIFEST.get("name", model_path.stem),
-        "classifier": clf_path.name if classifier is not None else None,
+        "classifier": (MANIFEST["stage2"]["file"] if _STAGE2 is not None
+                       else clf_path.name if classifier is not None else None),
         "trainDpi": TRAIN_DPI,
         "manifest": MANIFEST.get("_path"),
         "sheetDetector": getattr(sheet_detect, "__name__", None) and (
@@ -316,8 +333,17 @@ def run_model(img_rgb: np.ndarray, model, device, classifier):
       kept     = [(x, y, heat, prob|None)]
       suspects = [(x, y, heat, prob|None, reason)]
     """
-    heatmap = predict_heatmap(model, img_rgb, device)
-    raw_peaks = extract_peaks(heatmap, threshold=_PEAK_THR, min_dist=_MIN_DIST)
+    heatmap = predict_heatmap(model, img_rgb, device, tiling=_TILING)
+    if _STAGE2 is not None:
+        pts, sus = stage2.run(heatmap, img_rgb, _STAGE2)
+        H, W = heatmap.shape
+        at = lambda x, y: float(heatmap[min(H - 1, max(0, int(round(y)))), min(W - 1, max(0, int(round(x))))])
+        kept = [(x, y, at(x, y), p) for x, y, p in pts]
+        suspects = [(x, y, at(x, y), p, "low-confidence") for x, y, p in sus]
+        suspects.sort(key=lambda t: -t[3])
+        return kept, suspects[:SUSPECT_MAX]
+    raw_peaks = extract_peaks(heatmap, threshold=_PEAK_THR, min_dist=_MIN_DIST,
+                              exclude_border=_EXCLUDE_BORDER)
     bbox = _heat_bbox(heatmap, _BBOX_HEAT_THR, _BBOX_PAD) if _BBOX_CROP else None
     if bbox is not None:
         x0, y0, x1, y1 = bbox
@@ -341,7 +367,8 @@ def run_model(img_rgb: np.ndarray, model, device, classifier):
     # Weak heatmap peaks the threshold dropped: possible misses (often the
     # dark / out-of-focus pupae). Only inside the pupa region.
     raw_set = np.array([(x, y) for x, y in raw_peaks], dtype=np.float32).reshape(-1, 2)
-    weak = extract_peaks(heatmap, threshold=SUSPECT_HEAT_THR, min_dist=_MIN_DIST)
+    weak = extract_peaks(heatmap, threshold=SUSPECT_HEAT_THR, min_dist=_MIN_DIST,
+                         exclude_border=_EXCLUDE_BORDER)
     far = max(4, 2 * _MIN_DIST)
     for x, y in weak:
         heat = float(heatmap[y, x])
