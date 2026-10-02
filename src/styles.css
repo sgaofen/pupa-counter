@@ -160,7 +160,7 @@ input, select, textarea { font-family: inherit; }
 .btn-primary {
   background: var(--accent); color: var(--accent-ink); border-color: var(--accent);
 }
-.btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.btn-primary:hover:not([disabled]) { background: var(--accent-hover); border-color: var(--accent-hover); }
 .btn-ghost { border-color: transparent; background: transparent; color: var(--accent); }
 .btn-ghost:hover { background: var(--accent-soft); }
 .btn svg { width: 13px; height: 13px; }
@@ -389,7 +389,7 @@ input, select, textarea { font-family: inherit; }
 .shortcut-card .row + .row { border-top: 1px dashed var(--hairline); }
 
 /* Screen 3 — Database viewer ------------------------------------------- */
-.s3-body { display: grid; grid-template-columns: 320px 1fr; flex: 1; min-height: 0; }
+.s3-body { display: grid; grid-template-columns: clamp(240px, 22vw, 320px) minmax(0, 1fr); flex: 1; min-height: 0; }
 .tree {
   background: var(--sidebar); border-right: 1px solid var(--border);
   padding: 14px 8px 14px 14px; font-size: 12.5px; overflow: auto;
@@ -675,4 +675,40 @@ table.data th.sort-h { color: var(--ink-2); }
 .stats-card .stat-row { padding: 8px 0; }
 .detail-card .mini-pill, .detail-card table.detail-table th { white-space: nowrap; }
 .detail-card table.detail-table th, .detail-card table.detail-table td { padding-left: 8px; padding-right: 8px; }
-.db-split { grid-template-columns: 1fr 400px; }
+.db-split { grid-template-columns: minmax(0, 1fr) clamp(320px, 28vw, 400px); }
+
+/* Polish 2026-10-01 ------------------------------------------------------ */
+/* The sticky Save button sits over the stats card while scrolling; a disabled
+   (half-transparent) button let the rows show through. Same colour, opaque. */
+.right > .btn-primary[disabled] {
+  opacity: 1;
+  background: color-mix(in oklab, var(--accent) 50%, var(--bg));
+  border-color: transparent;
+}
+/* Narrow windows: the toolbar wraps instead of pushing buttons under the
+   right panel; card titles never break onto two lines. */
+.middle-actions { flex-wrap: wrap; row-gap: 8px; }
+.card-title { white-space: nowrap; }
+/* Keyboard focus is visible (mouse clicks stay unchanged). */
+.btn:focus-visible, .iconbtn:focus-visible, .tab:focus-visible, .link-btn:focus-visible,
+.sidebar-toggle:focus-visible, .tree-item:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--accent) 70%, transparent);
+  outline-offset: 2px;
+}
+/* Settings: keep "Save changes" reachable while there are unsaved edits. */
+.s4-actions.dirty {
+  position: sticky; bottom: 0; z-index: 3;
+  padding: 10px 0 14px; background: var(--bg);
+  box-shadow: 0 -10px 14px -6px var(--bg);
+}
+/* Database: the last-export link truncates its own text instead of
+   collapsing to "…". */
+.db-export .hint.with-link { display: flex; align-items: baseline; gap: 4px; }
+.db-export .hint.with-link .link-btn { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The shortcut hint shrinks (ellipsis) rather than wrapping to its own row. */
+.middle-actions .toolbar-hint { flex: 1 1 0%; text-align: right; }
+.session-card dd { white-space: nowrap; }
+/* Database: a long per-pupa list scrolls inside its card instead of
+   stretching the whole window (which pushed the table footer off-screen). */
+.s3-body, .db-split { grid-template-rows: minmax(0, 1fr); }
+.detail-card .detail-body { min-height: 0; }

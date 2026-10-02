@@ -20,7 +20,7 @@ export interface ScanHandle {
 
 export class NoScannerError extends Error {
   constructor() {
-    super("No scanner found. Check the USB cable and power, then try again — or use Import to open an image file.");
+    super("No scanner found. Check the USB cable and power, then try again — or use Load file… to open an image.");
     this.name = "NoScannerError";
   }
 }

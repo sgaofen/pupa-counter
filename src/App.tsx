@@ -3,10 +3,11 @@ import { TitleBar } from "./components/TitleBar";
 import { TopNav, type TabName } from "./components/TopNav";
 import { ScanView } from "./pages/ScanView";
 import { DatabaseView } from "./pages/DatabaseView";
-import { SettingsView } from "./pages/SettingsView";
-import { useSessionStore } from "./store/sessionStore";
+import { SettingsView, isSettingsDirty } from "./pages/SettingsView";
+import { hasUnsavedScan, useSessionStore } from "./store/sessionStore";
 import { useSettings } from "./store/settingsStore";
 import { serializeSession } from "./lib/sessionSchema";
+import type { Session } from "./types";
 
 export type ToastTone = "good" | "warn" | "bad";
 export interface SaveStatus { state: "idle" | "saving" | "saved" | "error"; at?: number; error?: string }
@@ -22,6 +23,16 @@ export function App() {
   const [hydrated, setHydrated] = useState(false);
   const [save, setSave] = useState<SaveStatus>({ state: "idle" });
   const saveTimer = useRef<number | null>(null);
+  // The session the pending (debounced) write belongs to.
+  const dirtySession = useRef<Session | null>(null);
+  const flushRef = useRef<() => Promise<void>>(async () => {});
+
+  // Leaving Settings with unsaved edits asks first.
+  const changeTab = (next: TabName) => {
+    if (tab === "Settings" && next !== "Settings" && isSettingsDirty()
+      && !window.confirm("Leave Settings without saving your changes?")) return;
+    setTab(next);
+  };
 
   const showToast = (msg: string | null, tone: ToastTone = "good") =>
     setToastState(msg ? { msg, tone, id: Date.now() } : null);
@@ -56,9 +67,14 @@ export function App() {
   // Guarded by `hydrated` so nothing is written before the file is loaded.
   useEffect(() => {
     if (!hydrated || !window.pupa?.session?.save) return;
+    // Writes the session captured when it was edited — not whatever session
+    // is open by the time the timer fires (an edit made just before
+    // switching sessions used to be dropped).
     const flush = async () => {
-      const session = useSessionStore.getState().session;
-      if (!session.sessionId) return;
+      if (saveTimer.current) { window.clearTimeout(saveTimer.current); saveTimer.current = null; }
+      const session = dirtySession.current;
+      dirtySession.current = null;
+      if (!session?.sessionId) return;
       try {
         const res = await window.pupa!.session.save(serializeSession(session));
         setSave({ state: "saved", at: res?.savedAt ?? Date.now() });
@@ -68,16 +84,40 @@ export function App() {
         showToast(`Saving failed: ${String(err)}`, "bad");
       }
     };
+    flushRef.current = flush;
     const unsub = useSessionStore.subscribe((state, prev) => {
       if (state.session === prev.session) return;
-      if (state.session.sessionId !== prev.session.sessionId) return; // switched session, nothing edited
+      if (state.session.sessionId !== prev.session.sessionId) {
+        // Switched session: write out the previous one if it had unsaved edits.
+        if (dirtySession.current) void flush();
+        return;
+      }
+      dirtySession.current = state.session;
       setSave({ state: "saving" });
       if (saveTimer.current) window.clearTimeout(saveTimer.current);
       saveTimer.current = window.setTimeout(flush, 250);
     });
-    const onUnload = () => { if (saveTimer.current) { window.clearTimeout(saveTimer.current); flush(); } };
+    const onUnload = () => { if (dirtySession.current) void flush(); };
     window.addEventListener("beforeunload", onUnload);
     return () => { unsub(); window.removeEventListener("beforeunload", onUnload); };
+  }, [hydrated]);
+
+  // Closing the window / quitting with a counted scan that was never saved
+  // asks first (main process shows the dialog), then writes the session out.
+  useEffect(() => {
+    const appApi = window.pupa?.app;
+    if (!appApi?.onCloseRequested) return;
+    return appApi.onCloseRequested(async () => {
+      appApi.closeAck();
+      const st = useSessionStore.getState();
+      if (hydrated && hasUnsavedScan(st)) {
+        const choice = await appApi.askUnsavedScan();
+        if (choice === "cancel") { appApi.cancelClose(); return; }
+        if (choice === "save") st.commitPendingScan();
+      }
+      await flushRef.current();
+      appApi.closeNow();
+    });
   }, [hydrated]);
 
   useEffect(() => {
@@ -92,7 +132,7 @@ export function App() {
       <div className="app">
         <TopNav
           activeTab={tab}
-          onTabChange={setTab}
+          onTabChange={changeTab}
           darkMode={darkMode}
           onToggleDark={toggleDark}
           operatorInitials={initials || "—"}
@@ -100,8 +140,8 @@ export function App() {
           save={save}
         />
         {!hydrated ? <div style={{ flex: 1 }} />
-          : tab === "Scan" ? <ScanView onNavigate={setTab} onToast={showToast} />
-          : tab === "Database" ? <DatabaseView onToast={showToast} onNavigate={setTab} />
+          : tab === "Scan" ? <ScanView onNavigate={changeTab} onToast={showToast} />
+          : tab === "Database" ? <DatabaseView onToast={showToast} onNavigate={changeTab} />
           : <SettingsView onToast={showToast} />}
       </div>
       {toast && (

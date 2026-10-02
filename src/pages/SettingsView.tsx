@@ -5,7 +5,17 @@ import { DEFAULT_GENOTYPES, useSettings } from "../store/settingsStore";
 import { useSessionStore } from "../store/sessionStore";
 import type { ToastTone } from "../App";
 
-const DPI_CHOICES = [150, 200, 300, 400, 600];
+// Same choices as the picker next to "New scan" on the Scan page.
+const DPI_CHOICES = [150, 300, 600];
+
+// Unsaved edits on this page, so App can ask before the user navigates away.
+let settingsDirty = false;
+export const isSettingsDirty = () => settingsDirty;
+
+/** Read-only path fields: show the end (folder name), not the start. */
+function scrollToEnd(el: HTMLInputElement | null) {
+  if (el) requestAnimationFrame(() => { el.scrollLeft = el.scrollWidth; });
+}
 
 function cleanError(err: unknown) {
   return (err instanceof Error ? err.message : String(err)).replace(/^Error invoking remote method '[^']+': (Error: )?/, "");
@@ -50,7 +60,12 @@ export function SettingsView({ onToast }: { onToast: (msg: string, tone?: ToastT
       if (list.length === 0) {
         if (announce) onToast("No scanner detected — check the USB cable and power", "warn");
       } else {
-        if (!list.find((d) => d.id === selectedDevice)) setSelectedDevice(list[0].id);
+        if (!list.find((d) => d.id === selectedDevice)) {
+          // Saved scanner missing (first run, or re-plugged): use the first one
+          // found and remember it, so just opening Settings isn't an "unsaved change".
+          setSelectedDevice(list[0].id);
+          settings.setScanner({ deviceId: list[0].id });
+        }
         if (announce) onToast(`Found ${list[0].name}`);
       }
     } catch (err) {
@@ -71,6 +86,11 @@ export function SettingsView({ onToast }: { onToast: (msg: string, tone?: ToastT
     dpi !== settings.scanner.dpi || mode !== settings.scanner.mode ||
     selectedDevice !== settings.scanner.deviceId ||
     JSON.stringify(genotypes) !== JSON.stringify(settings.genotypes);
+
+  useEffect(() => {
+    settingsDirty = dirty;
+    return () => { settingsDirty = false; };
+  }, [dirty]);
 
   const handleSave = () => {
     settings.setScanner({ deviceId: selectedDevice, dpi, mode });
@@ -153,14 +173,15 @@ export function SettingsView({ onToast }: { onToast: (msg: string, tone?: ToastT
               <div>
                 <div className="sr-label">Scan resolution</div>
                 <div className="sr-hint">
-                  The model was trained on {trainDpi} DPI scans. Other resolutions are resized to {trainDpi} DPI before
-                  counting, so counts stay comparable. The app checks what the scanner really delivers and warns if it differs.
+                  Counting always runs on a native {trainDpi} DPI scan (what the model was trained on). Choosing 300 or 600 DPI
+                  scans twice — {trainDpi} DPI for counting, then the higher resolution for the saved image — so counts stay
+                  comparable. Also available next to <b>New scan</b>.
                 </div>
               </div>
               <div className="sr-control">
                 <select className="select" value={dpi} onChange={(e) => setDpi(parseInt(e.target.value, 10))}>
                   {DPI_CHOICES.map((n) => (
-                    <option key={n} value={n}>{n} dpi{n === trainDpi ? " (model training resolution)" : ""}</option>
+                    <option key={n} value={n}>{n} dpi{n === trainDpi ? " (model training resolution)" : " (two passes)"}</option>
                   ))}
                 </select>
               </div>
@@ -203,6 +224,7 @@ export function SettingsView({ onToast }: { onToast: (msg: string, tone?: ToastT
                   {genotypes.map((g, i) => (
                     <div className="geno-row" key={`${i}-${g}`}>
                       <input className="input" defaultValue={g}
+                        onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
                         onBlur={(e) => {
                           const v = e.target.value.trim();
                           if (v && v !== g) { const n = [...genotypes]; n[i] = v; setGenotypes(n); }
@@ -314,7 +336,7 @@ export function SettingsView({ onToast }: { onToast: (msg: string, tone?: ToastT
               </div>
               <div className="sr-control">
                 <div className="file-chooser">
-                  <input className="input mono" readOnly value={paths?.sessions ?? "—"} style={{ fontSize: 11.5 }} />
+                  <input className="input mono" readOnly value={paths?.sessions ?? "—"} title={paths?.sessions} ref={(el) => scrollToEnd(el)} style={{ fontSize: 11.5 }} />
                   <button className="btn" onClick={() => paths && window.pupa?.shell.openPath(paths.sessions)} disabled={!paths}>{Icons.folder} Open</button>
                 </div>
               </div>
@@ -322,11 +344,11 @@ export function SettingsView({ onToast }: { onToast: (msg: string, tone?: ToastT
             <div className="setting-row">
               <div>
                 <div className="sr-label">Scan save directory</div>
-                <div className="sr-hint">Every new scan lands here. Unwritable or unset → the app's data folder.</div>
+                <div className="sr-hint">Every new scan lands here. Unset → Documents/Pupa Counter Scans; if the folder can't be written, the app's data folder is used.</div>
               </div>
               <div className="sr-control">
                 <div className="file-chooser three">
-                  <input className="input mono" readOnly value={saveDir} placeholder={paths?.scans ?? "(default)"} style={{ fontSize: 11.5 }} />
+                  <input className="input mono" readOnly value={saveDir || paths?.scans || ""} placeholder="(default)" title={saveDir || paths?.scans} ref={(el) => scrollToEnd(el)} style={{ fontSize: 11.5, color: saveDir ? undefined : "var(--muted)" }} />
                   <button className="btn" onClick={() => pickDir(setSaveDir)}>{Icons.folder} Choose…</button>
                   <button className="btn" onClick={() => window.pupa?.shell.openPath(saveDir || paths?.scans || "")} disabled={!paths}>Open</button>
                 </div>
@@ -340,7 +362,7 @@ export function SettingsView({ onToast }: { onToast: (msg: string, tone?: ToastT
               </div>
               <div className="sr-control">
                 <div className="file-chooser three">
-                  <input className="input mono" readOnly value={exportDir} placeholder={paths?.exportsDefault ?? "(default)"} style={{ fontSize: 11.5 }} />
+                  <input className="input mono" readOnly value={exportDir || paths?.exportsDefault || ""} placeholder="(default)" title={exportDir || paths?.exportsDefault} ref={(el) => scrollToEnd(el)} style={{ fontSize: 11.5, color: exportDir ? undefined : "var(--muted)" }} />
                   <button className="btn" onClick={() => pickDir(setExportDir)}>{Icons.folder} Choose…</button>
                   <button className="btn" onClick={() => window.pupa?.shell.openPath(exportDir || paths?.exportsDefault || "")} disabled={!paths}>Open</button>
                 </div>
@@ -350,7 +372,7 @@ export function SettingsView({ onToast }: { onToast: (msg: string, tone?: ToastT
           </div>
         </div>
 
-        <div className="s4-actions">
+        <div className={`s4-actions${dirty ? " dirty" : ""}`}>
           {dirty && <span className="hint" style={{ alignSelf: "center" }}>Unsaved changes</span>}
           <button className="btn btn-primary" onClick={handleSave} disabled={!dirty}>
             {Icons.check} Save changes

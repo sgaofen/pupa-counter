@@ -41,5 +41,14 @@ contextBridge.exposeInMainWorld("pupa", {
   },
   app: {
     paths: () => ipcRenderer.invoke("app:paths"),
+    onCloseRequested: (cb) => {
+      const h = () => cb();
+      ipcRenderer.on("app:close-requested", h);
+      return () => ipcRenderer.removeListener("app:close-requested", h);
+    },
+    closeAck: () => ipcRenderer.send("app:close-ack"),
+    askUnsavedScan: () => ipcRenderer.invoke("app:ask-unsaved-scan"),
+    cancelClose: () => ipcRenderer.send("app:close-cancel"),
+    closeNow: () => ipcRenderer.send("app:close-now"),
   },
 });

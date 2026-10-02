@@ -44,6 +44,8 @@ export const SCAN_HEADER = [
   "sheet_truncated_top", "sheet_truncated_bottom", "sheet_length_px", "sheet_width_px",
   "sheet_angle_deg", "sheet_corners_tl_tr_br_bl",
   "model", "image_path",
+  // Two-pass scans (300 / 600 dpi): the native 150-dpi image the counts came from.
+  "analysis_image_path", "analysis_dpi", "analysis_shift_px",
 ];
 
 export function scanRows(session: Session, replicateNumber?: number): Cell[][] {
@@ -66,6 +68,8 @@ export function scanRows(session: Session, replicateNumber?: number): Cell[][] {
         sh ? !!sh.truncatedTop : null, sh ? !!sh.truncatedBottom : null,
         fix(sh?.lengthPx ?? null, 1), fix(sh?.widthPx ?? null, 1), fix(sh?.angleDeg ?? null, 2), corners,
         s.modelVersion ?? null, s.imagePath,
+        s.analysis?.path ?? null, s.analysis?.dpi ?? null,
+        s.analysis?.shiftPx ? s.analysis.shiftPx.join(" ") : null,
       ];
     });
 }
@@ -114,6 +118,10 @@ export function xlsxSheets(session: Session, replicateNumber?: number): XlsxShee
 
 export function exportBaseName(session: Session, replicateNumber?: number): string {
   const tag = replicateNumber != null ? `_replicate${replicateNumber}` : "";
-  const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
+  // Local wall-clock time (toISOString is UTC, so an evening export was
+  // stamped with the next day's date).
+  const d = new Date();
+  const p2 = (n: number) => String(n).padStart(2, "0");
+  const stamp = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}-${p2(d.getHours())}-${p2(d.getMinutes())}`;
   return `${session.sessionId || "session"}${tag}_${stamp}`;
 }

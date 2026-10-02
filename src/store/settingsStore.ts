@@ -71,10 +71,18 @@ interface SettingsState {
   setOverlay: (k: keyof Overlays, v: boolean) => void;
 }
 
+/** Resolutions offered in the UI (150 = what the model is trained on). */
+export const SCAN_DPIS = [150, 300, 600];
 const initialScanner: ScannerSettings = {
   deviceId: "", dpi: 150, mode: "color",
   ...read<Partial<ScannerSettings>>(K.scanner, {}),
 };
+// Older versions offered 200 / 400 dpi; snap to the nearest choice so the
+// pickers never show a value that isn't in their list.
+if (!SCAN_DPIS.includes(initialScanner.dpi)) {
+  const d = Number(initialScanner.dpi) || 150;
+  initialScanner.dpi = SCAN_DPIS.reduce((a, b) => (Math.abs(b - d) < Math.abs(a - d) ? b : a));
+}
 const initialGenotypes = read<string[]>(K.genotypes, DEFAULT_GENOTYPES);
 
 export const useSettings = create<SettingsState>((set, get) => ({

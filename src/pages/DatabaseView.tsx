@@ -150,8 +150,9 @@ export function DatabaseView({ onToast }: Props) {
             </h2>
             <div className="meta">
               {selectedRep
-                ? `${scansInRep.length} scans · ${totalPupaeInRep.toLocaleString()} pupae · top 5 %: ${top5InRep.toLocaleString()} · ${session.operator} · ${selectedRep.startedAt.slice(0, 10)}`
-                : `${running.length} scans across ${session.replicates.length} replicate${session.replicates.length === 1 ? "" : "s"} · ${session.operator || "no operator"}`}
+                ? [`${scansInRep.length} scan${scansInRep.length === 1 ? "" : "s"}`, `${totalPupaeInRep.toLocaleString()} pupae`,
+                    `top 5 %: ${top5InRep.toLocaleString()}`, session.operator, selectedRep.startedAt.slice(0, 10)].filter(Boolean).join(" · ")
+                : `${running.length} scan${running.length === 1 ? "" : "s"} across ${session.replicates.length} replicate${session.replicates.length === 1 ? "" : "s"} · ${session.operator || "no operator"}`}
             </div>
           </div>
           <div className="db-export">
@@ -169,9 +170,9 @@ export function DatabaseView({ onToast }: Props) {
                 {Icons.excel} {exporting === "xlsx" ? "Exporting…" : "Excel"}
               </button>
             </div>
-            <div className="hint mono" title={lastExport ?? undefined}>
+            <div className={`hint mono${lastExport ? " with-link" : ""}`} title={lastExport ?? undefined}>
               {lastExport
-                ? <>Last export: <button className="link-btn mono" onClick={() => window.pupa?.shell.showItemInFolder(lastExport)}>{lastExport.split(/[\\/]/).pop()}</button></>
+                ? <><span style={{ flex: "none" }}>Last export:</span><button className="link-btn mono" title="Show in Finder" onClick={() => window.pupa?.shell.showItemInFolder(lastExport)}>{lastExport.split(/[\\/]/).pop()}</button></>
                 : `Exports ${scopeLabel} to ${exportDir || "Documents/Pupa Counter Exports"}`}
             </div>
           </div>
@@ -268,7 +269,15 @@ export function DatabaseView({ onToast }: Props) {
               </h3>
               <div className="sub">
                 {selectedScan
-                  ? `${selectedScan.pupae.length} pupae · top 5 % = ${recordTop5(selectedScan)} · ${selectedScan.manuallyEdited ? "manually edited" : "CNN only"}${selectedScan.actualDpi ? ` · ${selectedScan.actualDpi} dpi` : ""}${selectedScan.sheet?.found ? ` · sheet ${selectedScan.sheet.manual ? "adjusted" : "auto"}` : ""}`
+                  ? <>
+                      {`${selectedScan.pupae.length} pupae · top 5 % = ${recordTop5(selectedScan)} · ${selectedScan.manuallyEdited ? "manually edited" : "CNN only"}${selectedScan.actualDpi ? ` · ${selectedScan.actualDpi} dpi` : ""}${selectedScan.sheet?.found ? ` · sheet ${selectedScan.sheet.manual ? "adjusted" : "auto"}` : ""} · `}
+                      <button className="link-btn" title={selectedScan.imagePath}
+                        onClick={async () => {
+                          if (!window.pupa) return;
+                          if (await window.pupa.file.exists(selectedScan.imagePath)) window.pupa.shell.showItemInFolder(selectedScan.imagePath);
+                          else onToast(`Image file not found: ${selectedScan.imagePath}`, "warn");
+                        }}>show image</button>
+                    </>
                   : "Select a scan row to inspect every detected pupa"}
               </div>
             </div>
@@ -291,8 +300,8 @@ export function DatabaseView({ onToast }: Props) {
                       <tr key={i}>
                         <td className="mono" style={{ color: top5Sel.has(i) ? "var(--bad)" : "var(--muted)", fontWeight: top5Sel.has(i) ? 600 : 400 }}
                           title={top5Sel.has(i) ? "In the top 5 %" : undefined}>{p.index}</td>
-                        <td className="num mono">{p.x}</td>
-                        <td className="num mono">{p.y}</td>
+                        <td className="num mono">{Math.round(p.x)}</td>
+                        <td className="num mono">{Math.round(p.y)}</td>
                         <td className="num mono">{p.rankPct.toFixed(1)}</td>
                         <td><span className="mini-pill"
                           style={{

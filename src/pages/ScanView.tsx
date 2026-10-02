@@ -18,10 +18,24 @@ interface Props {
 
 const OTHER = "__other__";
 
+/** Read-only path fields: show the end (file name), not the start of the path. */
+function scrollToEnd(el: HTMLInputElement | null) {
+  if (el) requestAnimationFrame(() => { el.scrollLeft = el.scrollWidth; });
+}
+
 function cleanError(err: unknown): string {
   const msg = err instanceof CnnUnavailableError || err instanceof Error ? err.message : String(err);
-  return msg.replace(/^Error invoking remote method '[^']+': (Error: )?/, "");
+  const m = msg
+    .replace(/^Error invoking remote method '[^']+': (Error: )?/, "")
+    .replace(/\b(Error|FileNotFoundError|ValueError|RuntimeError): /g, "");
+  if (/could not read image/i.test(m)) return "the file could not be read as an image (is it a PNG or JPG scan?)";
+  if (/no scanner found/i.test(m)) return "no scanner found. Check the USB cable and that the scanner is switched on.";
+  if (/icscan scan timed out|timed out after/i.test(m)) return "the scanner did not respond in time. Unplug it, plug it back in and try again.";
+  if (/^open: /i.test(m) || /ImageCaptureCore Code=/i.test(m)) return `the scanner could not be opened (is another app such as Image Capture using it?) — ${m}`;
+  return m;
 }
+
+const IMAGE_EXT = /\.(png|jpe?g|tiff?)$/i;
 
 export function ScanView({ onNavigate, onToast }: Props) {
   const session = useSessionStore((s) => s.session);
@@ -45,7 +59,6 @@ export function ScanView({ onNavigate, onToast }: Props) {
   const [zoomCommand, setZoomCommand] = useState<
     { kind: "in" | "out" | "fit"; nonce: number } | null
   >(null);
-  const [originalCnn, setOriginalCnn] = useState<Pupa[] | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [otherGenotype, setOtherGenotype] = useState(false);
   // Collapsible sidebars — persisted to localStorage so the layout
@@ -67,8 +80,14 @@ export function ScanView({ onNavigate, onToast }: Props) {
   const state: "empty" | "processing" | "detected" =
     !pendingScan ? "empty" : pendingScan.detection ? "detected" : "processing";
   const det = pendingScan?.detection;
+  const originalCnn = pendingScan?.cnnPupae ?? null;
   const mock = isMockModel(det?.modelVersion);
-  const canSave = state === "detected" && !mock && !detectionError && !busy;
+  // A failed scanner run doesn't invalidate the counted scan still on screen;
+  // only a failed detection does.
+  const detectionFailed = !!detectionError && !detectionError.startsWith("Scan failed");
+  const detectionFailedRef = useRef(false);
+  detectionFailedRef.current = detectionFailed;
+  const canSave = state === "detected" && !mock && !detectionFailed && !busy;
 
   const round = currentReplicate({ session, currentReplicateId });
   const allScans = session.replicates.flatMap((r) => r.scans);
@@ -91,7 +110,6 @@ export function ScanView({ onNavigate, onToast }: Props) {
       onToast(reason
         ? `${reason}: saved scan ${record.imageNumber} (${record.totalPupae} pupae) to replicate ${record.replicateNumber}`
         : `Saved scan ${record.imageNumber} — ${record.totalPupae} pupae · replicate ${record.replicateNumber}`);
-      setOriginalCnn(null);
     }
     return record;
   }, [onToast]);
@@ -100,7 +118,9 @@ export function ScanView({ onNavigate, onToast }: Props) {
   const loadAndDetect = useCallback(async (handle: ScanHandle) => {
     // Never drop an unsaved, finished scan when the next one comes in.
     const st = useSessionStore.getState();
-    if (st.pendingScan?.detection && !isMockModel(st.pendingScan.detection.modelVersion) && !detectionError) {
+    // (Read through a ref: this callback can run from a closure made before a
+    // scanner error was cleared, which used to drop the previous scan.)
+    if (st.pendingScan?.detection && !isMockModel(st.pendingScan.detection.modelVersion) && !detectionFailedRef.current) {
       save("Before the next scan");
     }
     beginPendingScan(handle.path, handle.dataUrl, {
@@ -117,7 +137,6 @@ export function ScanView({ onNavigate, onToast }: Props) {
       });
       if (detection.analysis?.warning) onToast(`Two-pass scan: ${detection.analysis.warning}`, "warn");
       setDetection(detection);
-      setOriginalCnn(detection.pupae);
       if (handle.warnings?.length) onToast(`Scanner: ${handle.warnings[0]}`, "warn");
     } catch (err) {
       const msg = cleanError(err);
@@ -127,7 +146,7 @@ export function ScanView({ onNavigate, onToast }: Props) {
     } finally {
       setProcessing(false);
     }
-  }, [beginPendingScan, setDetection, onToast, save, detectionError]);
+  }, [beginPendingScan, setDetection, onToast, save]);
 
   const handleNewScan = useCallback(async () => {
     if (busy) return;
@@ -146,23 +165,34 @@ export function ScanView({ onNavigate, onToast }: Props) {
     }
   }, [busy, loadAndDetect, onToast]);
 
+  const openPath = useCallback(async (path: string) => {
+    try {
+      const handle = await loadScanFromPath(path);
+      if (handle) await loadAndDetect(handle);
+    } catch (err) {
+      onToast(`Could not open ${path.split(/[\\/]/).pop()} — ${cleanError(err)}`, "bad");
+    }
+  }, [loadAndDetect, onToast]);
+
   const handleLoadFromFile = useCallback(async () => {
     if (!window.pupa || busy) return;
     const path = await window.pupa.dialog.openImage();
     if (!path) return;
-    const handle = await loadScanFromPath(path);
-    if (handle) await loadAndDetect(handle);
-  }, [busy, loadAndDetect]);
+    await openPath(path);
+  }, [busy, openPath]);
 
   const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     setDragActive(false);
     const file = e.dataTransfer.files[0];
     if (!file || busy) return;
+    if (!IMAGE_EXT.test(file.name)) {
+      onToast(`${file.name} is not a scan image — drop a PNG or JPG`, "warn");
+      return;
+    }
     const path = window.pupa?.file.pathForFile(file) || (file as File & { path?: string }).path;
     if (path) {
-      const handle = await loadScanFromPath(path);
-      if (handle) await loadAndDetect(handle);
+      await openPath(path);
       return;
     }
     const dataUrl = URL.createObjectURL(file);
@@ -190,8 +220,7 @@ export function ScanView({ onNavigate, onToast }: Props) {
       return;
     }
     const pick = demos[Math.floor(Math.random() * demos.length)];
-    const handle = await loadScanFromPath(pick);
-    if (handle) await loadAndDetect(handle);
+    await openPath(pick);
   };
 
   const handleProcess = async () => {
@@ -207,7 +236,6 @@ export function ScanView({ onNavigate, onToast }: Props) {
         analysisDpi: pendingScan.detection?.analysis?.dpi ?? null,
       });
       setDetection(d);
-      setOriginalCnn(d.pupae);
     } catch (err) {
       const msg = cleanError(err);
       console.error("[ScanView] re-process failed:", err);
@@ -311,7 +339,7 @@ export function ScanView({ onNavigate, onToast }: Props) {
       className="s1-body"
       style={{
         gridTemplateColumns:
-          `${leftCollapsed ? "36px" : "248px"} 1fr ${rightCollapsed ? "36px" : "440px"}`,
+          `${leftCollapsed ? "36px" : "clamp(232px, 17vw, 248px)"} minmax(0, 1fr) ${rightCollapsed ? "36px" : "clamp(380px, 30vw, 440px)"}`,
       }}
     >
       <aside className={`sidebar${leftCollapsed ? " collapsed" : ""}`}>
@@ -348,8 +376,12 @@ export function ScanView({ onNavigate, onToast }: Props) {
           </div>
         </div>
         <div style={{ flex: 1 }} />
-        <button className="btn" style={{ justifyContent: "center" }} onClick={() => {
-          if (pendingScan?.detection && !mock) save("Before the new replicate");
+        <button className="btn" style={{ justifyContent: "center" }} disabled={busy} onClick={() => {
+          if (!pendingScan && round.scans.length === 0) {
+            onToast(`Replicate ${round.replicateNumber} has no scans yet — keep scanning into it`, "warn");
+            return;
+          }
+          if (pendingScan?.detection && !mock && !detectionFailed) save("Before the new replicate");
           startNewReplicate();
           onToast("Started a new replicate — genotype, comments and filename reset");
         }}>
@@ -435,7 +467,21 @@ export function ScanView({ onNavigate, onToast }: Props) {
           )}
 
           {/* Main canvas region */}
-          {state === "empty" ? (
+          {detectionError && !det && !busy ? (
+            <div className="drop-zone" onClick={handleLoadFromFile} style={{ cursor: "pointer" }}>
+              <div className="inner" style={{ maxWidth: 460, padding: "0 16px" }}>
+                <div className="primary" style={{ color: "var(--bad)" }}>
+                  {detectionError.startsWith("Scan failed") ? "The scan did not go through" : "This image could not be counted"}
+                </div>
+                <div className="secondary" style={{ color: "var(--muted)", wordBreak: "break-word" }}>
+                  {detectionError.replace(/^Scan failed: /, "")}
+                </div>
+                <div className="secondary">
+                  Click to load another file, drag one here, or press <span className="kbd">Space</span> to scan again
+                </div>
+              </div>
+            </div>
+          ) : state === "empty" ? (
             <div
               className="drop-zone"
               onClick={handleLoadFromFile}
@@ -447,7 +493,11 @@ export function ScanView({ onNavigate, onToast }: Props) {
                   {busy ? "Scanning…" : dragActive ? "Drop file to analyze" : "Drag a scan here, or click to browse"}
                 </div>
                 <div className="secondary">
-                  Accepts .png / .jpg — or press <span className="kbd">Space</span> / <b>New scan</b> to use the scanner
+                  {busy
+                    ? scanDpi > 150
+                      ? `Two passes: 150 dpi for counting, then ${scanDpi} dpi for the saved image — keep the lid closed`
+                      : "Keep the lid closed until the scan finishes"
+                    : <>Accepts .png / .jpg — or press <span className="kbd">Space</span> / <b>New scan</b> to use the scanner</>}
                 </div>
               </div>
             </div>
@@ -467,6 +517,12 @@ export function ScanView({ onNavigate, onToast }: Props) {
                 onAcceptSuspect={acceptSuspect}
                 top5={top5Set}
               />
+            </div>
+          ) : pendingScan?.imageDataUrl ? (
+            <div className="scan-img" style={{ display: "grid", placeItems: "center" }}>
+              <img src={pendingScan.imageDataUrl} alt="" draggable={false}
+                style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "contain", opacity: 0.5 }} />
+              <span className="pill accent" style={{ position: "absolute" }}><span className="dot" />Counting pupae…</span>
             </div>
           ) : (
             <div className="scan-img">
@@ -498,7 +554,7 @@ export function ScanView({ onNavigate, onToast }: Props) {
             {Icons.upload} New scan
           </button>
           <select className="select" value={scanDpi} disabled={busy}
-            style={{ width: "auto", minWidth: 0, padding: "4px 26px 4px 10px" }}
+            style={{ width: "auto", minWidth: 0, flex: "none", padding: "4px 26px 4px 10px" }}
             title="Scan resolution. Detection always runs at the model's 150 DPI; higher DPI only makes the saved image sharper (for labelling / future models)."
             onChange={(e) => setScanner({ dpi: parseInt(e.target.value, 10) })}>
             {[150, 300, 600].map((n) => (
@@ -558,7 +614,7 @@ export function ScanView({ onNavigate, onToast }: Props) {
             <div className="field"><label>Date & time</label>
               <input className="input mono" readOnly value={isoNow().slice(0, 16)} /></div>
             <div className="field"><label>File path</label>
-              <input className="input mono" readOnly title={pendingScan?.imagePath}
+              <input className="input mono" readOnly title={pendingScan?.imagePath} ref={(el) => scrollToEnd(el)}
                 value={pendingScan?.imagePath ?? "—"}
                 style={{ fontSize: 11.5 }} /></div>
             <div className="field"><label htmlFor="f-experiment">Experiment</label>
@@ -667,7 +723,7 @@ export function ScanView({ onNavigate, onToast }: Props) {
           title={
             mock
               ? "Save disabled — current detection is from the mock backend. Fix the Python worker in Settings → Detection model."
-              : detectionError
+              : detectionFailed
               ? `Save disabled — ${detectionError}`
               : state !== "detected"
               ? "Load and process a scan first."
@@ -687,8 +743,9 @@ function defaultCorners(W: number, H: number, pupae: Pupa[]): Corner[] {
   let x0 = W * 0.3, x1 = W * 0.7, y0 = H * 0.1, y1 = H * 0.9;
   if (pupae.length >= 2) {
     const xs = pupae.map((p) => p.x), ys = pupae.map((p) => p.y);
-    x0 = Math.max(0, Math.min(...xs) - 30); x1 = Math.min(W - 1, Math.max(...xs) + 30);
-    y0 = Math.max(0, Math.min(...ys) - 30); y1 = Math.min(H - 1, Math.max(...ys) + 30);
+    const pad = 30 * Math.max(1, W / 1240); // 30 px at 150 dpi, same physical margin at 300 / 600
+    x0 = Math.max(0, Math.min(...xs) - pad); x1 = Math.min(W - 1, Math.max(...xs) + pad);
+    y0 = Math.max(0, Math.min(...ys) - pad); y1 = Math.min(H - 1, Math.max(...ys) + pad);
   }
   return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
 }

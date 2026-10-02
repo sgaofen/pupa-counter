@@ -245,6 +245,12 @@ declare global {
       };
       app: {
         paths: () => Promise<AppPaths>;
+        /** Window close / quit was requested; returns an unsubscribe function. */
+        onCloseRequested?: (cb: () => void) => () => void;
+        closeAck: () => void;
+        askUnsavedScan: () => Promise<"save" | "discard" | "cancel">;
+        cancelClose: () => void;
+        closeNow: () => void;
       };
     };
     __pupaDebug?: Record<string, unknown>;

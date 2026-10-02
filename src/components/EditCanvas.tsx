@@ -47,7 +47,7 @@ interface Props {
   top5?: Set<number>;
 }
 
-const HIT_PX = 20;           // right-click delete radius in IMAGE pixels
+const HIT_PX = 20;           // right-click delete radius in 150-DPI image pixels
 const DOT_SCREEN_RADIUS = 5; // on-screen dot radius
 const DRAG_PX = 4;           // screen px before a press counts as a drag
 const RING_ZOOM = 2.5;       // above this zoom dots turn into rings so the pupa stays visible
@@ -75,8 +75,17 @@ export function EditCanvas({
 }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
-  const [zoom, setZoom] = useState(1);
-  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  // View (zoom + pan) lives in a ref as well as in state: wheel / key events
+  // can arrive faster than React re-renders, and reading a stale zoom made
+  // fast scroll-zooming drop steps and drift away from the cursor.
+  const viewRef = useRef({ zoom: 1, x: 0, y: 0 });
+  const [view, setViewState] = useState(viewRef.current);
+  const setView = useCallback((v: { zoom: number; x: number; y: number }) => {
+    viewRef.current = v;
+    setViewState(v);
+  }, []);
+  const zoom = view.zoom;
+  const offset = { x: view.x, y: view.y };
   const [drag, setDrag] = useState<Drag | null>(null);
   const [hover, setHover] = useState<{ x: number; y: number } | null>(null);
   const undoStack = useRef<Pupa[][]>([]);
@@ -106,19 +115,6 @@ export function EditCanvas({
     return Math.min(size.w / imageWidth, size.h / imageHeight);
   }, [size, imageWidth, imageHeight]);
 
-  // On image change or initial mount → start at 2.5× fit so pupae are
-  // visible at usable scale (LiDE 300 scans are paper-sized; fit-to-window
-  // makes individual pupae ~6 px tall, too small for accurate clicking).
-  useEffect(() => {
-    if (fitZoom <= 0) return;
-    const initialZoom = fitZoom * 2.5;
-    setZoom(initialZoom);
-    setOffset({
-      x: (size.w - imageWidth * initialZoom) / 2,
-      y: (size.h - imageHeight * initialZoom) / 2,
-    });
-  }, [imageDataUrl, fitZoom, size.w, size.h, imageWidth, imageHeight]);
-
   /** Clamp offset so the image can be panned such that any edge reaches
    *  the viewport centre (but never wholly off-screen). */
   const clampOffset = useCallback(
@@ -141,37 +137,71 @@ export function EditCanvas({
     [imageWidth, imageHeight, size.w, size.h]
   );
 
+  // New image → start at 2.5× fit so pupae are visible at a usable scale
+  // (LiDE 300 scans are paper-sized; fit-to-window makes individual pupae
+  // ~6 px tall), centred on where the pupae are rather than on the middle
+  // of the scan bed. A window / panel resize keeps the current view centre.
+  const viewKey = useRef<string | null>(null);
+  const prevSize = useRef(size);
+  useEffect(() => {
+    if (size.w === 0 || size.h === 0 || imageWidth === 0 || imageHeight === 0) return;
+    const key = `${imageDataUrl.length}:${imageDataUrl.slice(-64)}:${imageWidth}x${imageHeight}`;
+    const fz = Math.min(size.w / imageWidth, size.h / imageHeight);
+    if (viewKey.current !== key) {
+      viewKey.current = key;
+      const z = fz * 2.5;
+      const med = (v: number[]) => { const a = [...v].sort((p, q) => p - q); return a[Math.floor(a.length / 2)]; };
+      const cx = pupae.length ? med(pupae.map((p) => p.x)) : imageWidth / 2;
+      const cy = pupae.length ? med(pupae.map((p) => p.y)) : imageHeight / 2;
+      setView({ zoom: z, ...clampOffset(size.w / 2 - cx * z, size.h / 2 - cy * z, z) });
+    } else if (prevSize.current.w !== size.w || prevSize.current.h !== size.h) {
+      const v = viewRef.current, p = prevSize.current;
+      if (p.w > 0 && p.h > 0) {
+        const cx = (p.w / 2 - v.x) / v.zoom, cy = (p.h / 2 - v.y) / v.zoom;
+        const wasFit = Math.abs(v.zoom - Math.min(p.w / imageWidth, p.h / imageHeight)) < 1e-6;
+        const z = wasFit ? fz : Math.max(v.zoom, fz * 0.4);
+        setView({ zoom: z, ...clampOffset(size.w / 2 - cx * z, size.h / 2 - cy * z, z) });
+      }
+    }
+    prevSize.current = size;
+  }, [imageDataUrl, size, imageWidth, imageHeight, clampOffset]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const toImage = useCallback(
     (clientX: number, clientY: number) => {
       const rect = hostRef.current!.getBoundingClientRect();
-      return { x: (clientX - rect.left - offset.x) / zoom, y: (clientY - rect.top - offset.y) / zoom };
+      const v = viewRef.current;
+      return { x: (clientX - rect.left - v.x) / v.zoom, y: (clientY - rect.top - v.y) / v.zoom };
     },
-    [offset, zoom]
+    []
   );
 
   const zoomAt = useCallback(
     (factor: number, cx: number, cy: number) => {
+      const v = viewRef.current;
       const minZoom = fitZoom * 0.4;
       const maxZoom = 40;
-      const nextZoom = Math.max(minZoom, Math.min(maxZoom, zoom * factor));
-      const ratio = nextZoom / zoom;
-      const nextOffset = {
-        x: cx - (cx - offset.x) * ratio,
-        y: cy - (cy - offset.y) * ratio,
-      };
-      setZoom(nextZoom);
-      setOffset(clampOffset(nextOffset.x, nextOffset.y, nextZoom));
+      const nextZoom = Math.max(minZoom, Math.min(maxZoom, v.zoom * factor));
+      const ratio = nextZoom / v.zoom;
+      setView({
+        zoom: nextZoom,
+        ...clampOffset(cx - (cx - v.x) * ratio, cy - (cy - v.y) * ratio, nextZoom),
+      });
     },
-    [zoom, offset, fitZoom, clampOffset]
+    [fitZoom, clampOffset, setView]
   );
 
+  const panBy = useCallback((dx: number, dy: number) => {
+    const v = viewRef.current;
+    setView({ zoom: v.zoom, ...clampOffset(v.x + dx, v.y + dy, v.zoom) });
+  }, [clampOffset, setView]);
+
   const fit = useCallback(() => {
-    setZoom(fitZoom);
-    setOffset({
+    setView({
+      zoom: fitZoom,
       x: (size.w - imageWidth * fitZoom) / 2,
       y: (size.h - imageHeight * fitZoom) / 2,
     });
-  }, [fitZoom, size, imageWidth, imageHeight]);
+  }, [fitZoom, size, imageWidth, imageHeight, setView]);
 
   // Handle external zoom commands from the toolbar.
   useEffect(() => {
@@ -233,10 +263,10 @@ export function EditCanvas({
   };
 
   const removeNearest = useCallback((ix: number, iy: number) => {
-    const i = nearestPupa(ix, iy, HIT_PX);
+    const i = nearestPupa(ix, iy, Math.max(HIT_PX * dpiK, 9 / viewRef.current.zoom));
     if (i < 0) return;
     commit(pupae.filter((_, k) => k !== i));
-  }, [nearestPupa, pupae, commit]);
+  }, [nearestPupa, pupae, commit, dpiK]);
 
   const undo = useCallback(() => {
     const prev = undoStack.current.pop();
@@ -266,18 +296,20 @@ export function EditCanvas({
       if (meta && e.key.toLowerCase() === "y") { e.preventDefault(); redo(); return; }
       if (meta || e.altKey) return;
       const step = 50;
-      if (e.key === "ArrowLeft") { setOffset((o) => clampOffset(o.x + step, o.y, zoom)); e.preventDefault(); }
-      else if (e.key === "ArrowRight") { setOffset((o) => clampOffset(o.x - step, o.y, zoom)); e.preventDefault(); }
-      else if (e.key === "ArrowUp") { setOffset((o) => clampOffset(o.x, o.y + step, zoom)); e.preventDefault(); }
-      else if (e.key === "ArrowDown") { setOffset((o) => clampOffset(o.x, o.y - step, zoom)); e.preventDefault(); }
+      if (e.key === "ArrowLeft") { panBy(step, 0); e.preventDefault(); }
+      else if (e.key === "ArrowRight") { panBy(-step, 0); e.preventDefault(); }
+      else if (e.key === "ArrowUp") { panBy(0, step); e.preventDefault(); }
+      else if (e.key === "ArrowDown") { panBy(0, -step); e.preventDefault(); }
       else if (e.key === "+" || e.key === "=") { zoomAt(1.25, size.w / 2, size.h / 2); e.preventDefault(); }
       else if (e.key === "-" || e.key === "_") { zoomAt(1 / 1.25, size.w / 2, size.h / 2); e.preventDefault(); }
       else if (e.key.toLowerCase() === "f") { fit(); e.preventDefault(); }
       else if (e.key.toLowerCase() === "t") {
-        setOffset((o) => clampOffset(o.x, size.h / 2, zoom));
+        const v = viewRef.current;
+        setView({ zoom: v.zoom, ...clampOffset(v.x, size.h / 2, v.zoom) });
         e.preventDefault();
       } else if (e.key.toLowerCase() === "b") {
-        setOffset((o) => clampOffset(o.x, size.h / 2 - imageHeight * zoom, zoom));
+        const v = viewRef.current;
+        setView({ zoom: v.zoom, ...clampOffset(v.x, size.h / 2 - imageHeight * v.zoom, v.zoom) });
         e.preventDefault();
       } else if ((e.key === "Delete" || e.key === "Backspace") && hover) {
         removeNearest(hover.x, hover.y);
@@ -286,7 +318,7 @@ export function EditCanvas({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [undo, redo, zoomAt, fit, clampOffset, zoom, size.w, size.h, imageHeight, hover, removeNearest]);
+  }, [undo, redo, zoomAt, fit, panBy, clampOffset, setView, size.w, size.h, imageHeight, hover, removeNearest]);
 
   // Native, non-passive wheel listener: React's onWheel is passive, so its
   // preventDefault() was ignored (and logged a console warning).
@@ -342,7 +374,8 @@ export function EditCanvas({
     if (drag.kind === "pending" && Math.hypot(dx, dy) > DRAG_PX) {
       setDrag({ ...drag, kind: "pan" });
     } else if (drag.kind === "pan") {
-      setOffset(clampOffset(drag.ox + dx, drag.oy + dy, zoom));
+      const z = viewRef.current.zoom;
+      setView({ zoom: z, ...clampOffset(drag.ox + dx, drag.oy + dy, z) });
     } else if (drag.kind === "point") {
       setDrag({
         ...drag,
@@ -379,6 +412,9 @@ export function EditCanvas({
 
   const onContextMenu: React.MouseEventHandler<HTMLDivElement> = (e) => {
     e.preventDefault();
+    // macOS turns ⌃-click into a context-menu event; ⌃-drag pans, so it must
+    // not also delete the pupa under the cursor.
+    if (e.ctrlKey) return;
     const p = toImage(e.clientX, e.clientY);
     removeNearest(p.x, p.y);
   };
@@ -490,7 +526,7 @@ export function EditCanvas({
             return (
               <g key={i + ":" + p.x + ":" + p.y}>
                 {top5?.has(i) && (
-                  <circle cx={p.x} cy={p.y} r={rings ? ringR + 2.5 : DOT_SCREEN_RADIUS / zoom + 3.5 / zoom}
+                  <circle cx={p.x} cy={p.y} r={rings ? ringR + 2.5 * dpiK : DOT_SCREEN_RADIUS / zoom + 3.5 / zoom}
                     fill="none" stroke="#B4362E" strokeWidth={1.8 / zoom} />
                 )}
                 {rings ? (

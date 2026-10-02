@@ -67,6 +67,8 @@ interface PendingScan {
   dpiSource: string | null;
   /** Dots the model found before any manual edit. */
   cnnCount: number;
+  /** The model's own result, kept so "Revert" still works after a tab switch. */
+  cnnPupae: Pupa[] | null;
 }
 
 export interface ScanDpiInfo {
@@ -166,6 +168,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         actualDpi: dpi?.actualDpi ?? null,
         dpiSource: dpi?.dpiSource ?? null,
         cnnCount: 0,
+        cnnPupae: null,
       },
     });
   },
@@ -179,6 +182,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         detection: d,
         sheet,
         cnnCount: d.pupae.length,
+        cnnPupae: d.pupae,
         actualDpi: s.pendingScan.actualDpi ?? d.imageDpi ?? null,
         dpiSource: s.pendingScan.actualDpi ? s.pendingScan.dpiSource : d.imageDpiSource,
       },
@@ -302,6 +306,12 @@ function geometry(c: Corner[]) {
     widthPx: Math.round(widthPx * 10) / 10,
     angleDeg: Math.round((Math.atan2(ax, -ay) * 18000) / Math.PI) / 100,
   };
+}
+
+/** A finished, real (non-mock) detection that is not in the database yet. */
+export function hasUnsavedScan(s: { pendingScan: PendingScan | null }): boolean {
+  const m = s.pendingScan?.detection?.modelVersion?.toLowerCase() ?? "";
+  return !!s.pendingScan?.detection && !m.includes("mock") && !m.includes("synthetic");
 }
 
 export function currentReplicate(s: { session: Session; currentReplicateId: string }): Replicate {

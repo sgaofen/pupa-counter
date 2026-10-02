@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import type { SessionSummary } from "../types";
-import { useSessionStore } from "../store/sessionStore";
+import { hasUnsavedScan, useSessionStore } from "../store/sessionStore";
 import { useSettings } from "../store/settingsStore";
 import { Icons } from "./icons";
 import type { ToastTone } from "../App";
@@ -32,22 +32,34 @@ export function SessionPicker({ onToast }: { onToast?: (msg: string, tone?: Toas
     window.pupa.session.list().then(setList).catch(() => setList([]));
   }, [open]);
 
+  // A counted scan that isn't saved yet goes into the session it was
+  // scanned in, instead of silently disappearing on the switch.
+  function keepPendingScan() {
+    const st = useSessionStore.getState();
+    if (!hasUnsavedScan(st)) return null;
+    return st.commitPendingScan();
+  }
+
   async function switchTo(id: string) {
     setOpen(false);
     if (!window.pupa?.session?.load || id === session.sessionId) return;
+    const kept = keepPendingScan();
+    const prevId = session.sessionId;
     const data = await window.pupa.session.load(id);
-    if (data && loadSession(data)) onToast?.(`Switched to ${id}`);
+    if (data && loadSession(data)) onToast?.(`Switched to ${id}${kept ? ` — scan ${kept.imageNumber} (${kept.totalPupae} pupae) was saved to ${prevId} first` : ""}`);
     else onToast?.(`Could not read session ${id}`, "bad");
   }
 
   async function createNew() {
     setOpen(false);
     if (!window.pupa?.session?.create) return;
+    const kept = keepPendingScan();
+    const prevId = session.sessionId;
     const data = await window.pupa.session.create({
       operator: session.operator || useSettings.getState().defaultOperator,
       experiment: session.experiment,
     });
-    if (data && loadSession(data)) onToast?.(`New session: ${(data as { sessionId: string }).sessionId}`);
+    if (data && loadSession(data)) onToast?.(`New session: ${(data as { sessionId: string }).sessionId}${kept ? ` — scan ${kept.imageNumber} (${kept.totalPupae} pupae) was saved to ${prevId} first` : ""}`);
   }
 
   return (

@@ -2,7 +2,7 @@
 // Dev mode: loads the Vite dev server at http://localhost:5173 (or the built
 // dist/ when PUPA_USE_DIST=1). Prod mode: loads the built dist/index.html.
 
-const { app, BrowserWindow, ipcMain, dialog, shell } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, shell, nativeImage } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
@@ -54,8 +54,13 @@ const DEFAULT_SCAN_DIR = () =>
 const DEFAULT_EXPORT_DIR = () =>
   process.env.PUPA_EXPORT_DIR || path.join(app.getPath("documents"), "Pupa Counter Exports");
 const TOUR = !!process.env.PUPA_TOUR;
+// Test hook: open the window without stealing focus and stub Finder / open
+// actions (used by the tour and by scripted UI checks).
+const QUIET = TOUR || process.env.PUPA_TEST_QUIET === "1";
 
 let mainWindow = null;
+let quitting = false;      // set by before-quit (⌘Q), so an approved close also quits
+let closeAckTimer = null;  // renderer must answer a close request, else we close anyway
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -66,7 +71,7 @@ function createWindow() {
     titleBarStyle: "hiddenInset", // macOS: system traffic lights, no title text
     title: "Pupa Counter",
     backgroundColor: "#F5F4EF",
-    show: !TOUR,
+    show: !QUIET,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -82,7 +87,19 @@ function createWindow() {
     console.error("[renderer] process gone:", JSON.stringify(details));
   });
 
-  if (TOUR) mainWindow.showInactive();
+  // Closing with a counted but unsaved scan: ask the renderer, which asks the
+  // user (see app:ask-unsaved-scan) and writes the session out first.
+  mainWindow.on("close", (e) => {
+    const win = mainWindow;
+    if (!win || win.__closeApproved || TOUR || win.webContents.isCrashed?.()) return;
+    e.preventDefault();
+    win.webContents.send("app:close-requested");
+    clearTimeout(closeAckTimer);
+    closeAckTimer = setTimeout(() => approveClose(win), 2000);
+  });
+  mainWindow.on("closed", () => { mainWindow = null; });
+
+  if (QUIET) mainWindow.showInactive();
   if (DEV && process.env.PUPA_USE_DIST !== "1") {
     mainWindow.loadURL("http://localhost:5173");
     if (!process.env.PUPA_TOUR) mainWindow.webContents.openDevTools({ mode: "detach" });
@@ -97,6 +114,37 @@ function createWindow() {
     });
   }
 }
+
+function approveClose(win) {
+  clearTimeout(closeAckTimer);
+  if (!win || win.isDestroyed()) return;
+  win.__closeApproved = true;
+  if (quitting) app.quit(); else win.close();
+}
+
+// Scripted UI checks: `kill -USR2 <pid>` closes the window like the red button.
+if (QUIET) process.on("SIGUSR2", () => mainWindow?.close());
+
+ipcMain.on("app:close-ack", () => clearTimeout(closeAckTimer));
+ipcMain.on("app:close-cancel", () => { clearTimeout(closeAckTimer); quitting = false; });
+ipcMain.on("app:close-now", (evt) => approveClose(BrowserWindow.fromWebContents(evt.sender)));
+ipcMain.handle("app:ask-unsaved-scan", async (evt) => {
+  const win = BrowserWindow.fromWebContents(evt.sender);
+  if (QUIET && process.env.PUPA_TEST_CLOSE_CHOICE) { // scripted UI checks only
+    console.log(`[close] unsaved scan → test answer "${process.env.PUPA_TEST_CLOSE_CHOICE}"`);
+    return process.env.PUPA_TEST_CLOSE_CHOICE;
+  }
+  const { response } = await dialog.showMessageBox(win, {
+    type: "warning",
+    buttons: ["Save to database", "Don't save", "Cancel"],
+    defaultId: 0,
+    cancelId: 2,
+    message: "The current scan hasn't been saved to the database.",
+    detail: "Save it before closing? Its counts and any corrections you made will be lost otherwise.",
+  });
+  if (response === 2) quitting = false;
+  return response === 0 ? "save" : response === 1 ? "discard" : "cancel";
+});
 
 // --- Sessions ----------------------------------------------------------------
 //
@@ -239,7 +287,8 @@ ipcMain.handle("session:save", async (_evt, data) => {
 ipcMain.handle("session:create", async (_evt, partial) => {
   await ensureDir(SESSIONS_DIR());
   const now = new Date();
-  const stamp = now.toISOString().slice(0, 19).replace(/[:T]/g, "-");
+  const p2 = (n) => String(n).padStart(2, "0");
+  const stamp = `${now.getFullYear()}-${p2(now.getMonth() + 1)}-${p2(now.getDate())}-${p2(now.getHours())}-${p2(now.getMinutes())}-${p2(now.getSeconds())}`;
   const id = safeId(partial?.sessionId || `sess_${stamp}`);
   const startedAt = partial?.startedAt || now.toLocaleString("sv-SE",
     { timeZone: "America/Los_Angeles" });
@@ -297,8 +346,25 @@ ipcMain.handle("dialog:openDirectory", async () => {
 });
 
 ipcMain.handle("file:readImageDataUrl", async (_evt, p) => {
-  const buf = await fs.promises.readFile(p);
   const ext = path.extname(p).slice(1).toLowerCase();
+  if (ext === "tif" || ext === "tiff") {
+    // Chromium can't display TIFF. Counting reads the original file; only
+    // the on-screen copy is converted (macOS: sips, built in).
+    const img = nativeImage.createFromPath(p);
+    if (!img.isEmpty()) return img.toDataURL();
+    if (IS_MAC) {
+      const tmp = path.join(os.tmpdir(), `pupa-preview-${process.pid}-${Date.now()}.png`);
+      try {
+        await new Promise((resolve, reject) => execFile("sips", ["-s", "format", "png", p, "--out", tmp],
+          { timeout: 60000 }, (err) => (err ? reject(err) : resolve())));
+        return `data:image/png;base64,${(await fs.promises.readFile(tmp)).toString("base64")}`;
+      } catch { /* fall through to the error below */ } finally {
+        fs.promises.unlink(tmp).catch(() => {});
+      }
+    }
+    throw new Error("This TIFF can't be displayed — save the scan as PNG and load that instead.");
+  }
+  const buf = await fs.promises.readFile(p);
   const mime =
     ext === "png" ? "image/png"
     : ext === "jpg" || ext === "jpeg" ? "image/jpeg"
@@ -366,14 +432,14 @@ ipcMain.handle("export:xlsx", async (_evt, { dir, filename, sheets }) => {
 });
 
 ipcMain.handle("shell:showItemInFolder", async (_evt, p) => {
-  if (TOUR) { console.log(`[tour] would show in folder: ${p}`); return true; }
+  if (QUIET) { console.log(`[tour] would show in folder: ${p}`); return true; }
   if (p) shell.showItemInFolder(p);
   return true;
 });
 
 ipcMain.handle("shell:openPath", async (_evt, p) => {
   if (!p) return "no path";
-  if (TOUR) { console.log(`[tour] would open: ${p}`); return ""; }
+  if (QUIET) { console.log(`[tour] would open: ${p}`); return ""; }
   await ensureDir(p).catch(() => {});
   return shell.openPath(p);
 });
@@ -504,7 +570,8 @@ ipcMain.handle("cnn:info", async () => {
   }
 });
 
-app.on("before-quit", () => {
+app.on("before-quit", () => { quitting = true; });
+app.on("will-quit", () => {
   if (cnnWorker.proc) {
     try { cnnWorker.proc.stdin.write(JSON.stringify({ id: 0, cmd: "quit" }) + "\n"); } catch {}
     try { cnnWorker.proc.kill(); } catch {}
