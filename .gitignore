@@ -16,3 +16,4 @@ daemon/output/
 
 # macOS scanner CLI build output (npm run build:icscan)
 electron/scanner/mac/bin/
+daemon/.venv
