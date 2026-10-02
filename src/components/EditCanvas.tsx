@@ -44,7 +44,6 @@ interface Props {
   onSheetChange?: (corners: Corner[]) => void;
   suspects?: Suspect[];
   onAcceptSuspect?: (s: Suspect) => void;
-  top5?: Set<number>;
 }
 
 const HIT_PX = 20;           // right-click delete radius in 150-DPI image pixels
@@ -70,7 +69,6 @@ export function EditCanvas({
   onSheetChange,
   suspects = [],
   onAcceptSuspect,
-  top5,
 }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
@@ -522,10 +520,6 @@ export function EditCanvas({
             const hot = i === hoverIdx;
             return (
               <g key={i + ":" + p.x + ":" + p.y}>
-                {top5?.has(i) && (
-                  <circle cx={p.x} cy={p.y} r={(DOT_SCREEN_RADIUS + 3.5) / zoom}
-                    fill="none" stroke="#B4362E" strokeWidth={1.8 / zoom} />
-                )}
                 {/* Same small dot at every zoom: once zoomed in the pupa is far
                     bigger than the dot, so it stays visible around it. */}
                 <circle cx={p.x} cy={p.y} r={(hot ? 1.3 : 1) * DOT_SCREEN_RADIUS / zoom}
@@ -538,7 +532,6 @@ export function EditCanvas({
       <div className="edit-canvas-legend">
         <span><i className="lg-dot" style={{ background: "#2BA557" }} />model</span>
         <span><i className="lg-dot" style={{ background: "#1F5F6B" }} />added by hand</span>
-        {top5 && top5.size > 0 && <span><i className="lg-ring" />top 5 %</span>}
         {suspects.length > 0 && <span><i className="lg-ring dashed" />possible miss — click to add</span>}
       </div>
       <div className="edit-canvas-hud">

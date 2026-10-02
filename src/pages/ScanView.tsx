@@ -6,7 +6,7 @@ import { currentReplicate, useSessionStore, isoNow } from "../store/sessionStore
 import { useSettings } from "../store/settingsStore";
 import { scanNow, loadScanFromPath, listDemoScans, type ScanHandle } from "../adapters/scannerAdapter";
 import { runDetection, CnnUnavailableError, isMockModel } from "../adapters/cnnAdapter";
-import { recordTop5, sheetNeedsCheck, top5Count, top5Indices } from "../lib/bands";
+import { recordTop5, sheetNeedsCheck, top5Count } from "../lib/bands";
 import type { TabName } from "../components/TopNav";
 import type { Corner, Pupa, Suspect } from "../types";
 import type { ToastTone } from "../App";
@@ -311,7 +311,6 @@ export function ScanView({ onNavigate, onToast }: Props) {
   const cnnRemaining = currentPupae.filter((p) => p.source === "cnn").length;
   const removed = Math.max(0, cnnOriginalCount - cnnRemaining);
   const countForThisScan = currentPupae.length;
-  const top5Set = useMemo(() => top5Indices(currentPupae), [currentPupae]);
   const suspects = useMemo(
     () => (det?.suspects ?? []).filter((s) => !currentPupae.some((p) => Math.hypot(p.x - s.x, p.y - s.y) < 4)),
     [det?.suspects, currentPupae],
@@ -517,7 +516,6 @@ export function ScanView({ onNavigate, onToast }: Props) {
                 onSheetChange={(c) => setPendingSheet(c)}
                 suspects={suspects}
                 onAcceptSuspect={acceptSuspect}
-                top5={top5Set}
               />
             </div>
           ) : pendingScan?.imageDataUrl ? (
@@ -671,7 +669,7 @@ export function ScanView({ onNavigate, onToast }: Props) {
             <div className="stat-row">
               <div className="label-col">
                 <span className="l">Top 5%</span>
-                <span className="s">Top {top5N} pupae by rank position (red rings)</span>
+                <span className="s">Top {top5N} pupae by rank position (above the RANK 5% line)</span>
               </div>
               <div className="n accent">{state === "detected" ? top5N : "—"}</div>
             </div>
