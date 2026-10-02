@@ -496,7 +496,7 @@ export function ScanView({ onNavigate, onToast }: Props) {
                 <div className="secondary">
                   {busy
                     ? scanDpi > 150
-                      ? `Two passes: 150 dpi for counting, then ${scanDpi} dpi for the saved image — keep the lid closed`
+                      ? `Scanning at ${scanDpi} dpi (shrunk to 150 dpi for counting) — keep the lid closed`
                       : "Keep the lid closed until the scan finishes"
                     : <>Accepts .png / .jpg — or press <span className="kbd">Space</span> / <b>New scan</b> to use the scanner</>}
                 </div>
@@ -541,7 +541,7 @@ export function ScanView({ onNavigate, onToast }: Props) {
               {pendingScan?.actualDpi ? `${pendingScan.actualDpi} dpi` : "— dpi"}
               {det?.analysis
                 ? ` (counted on a native ${det.analysis.dpi ?? 150}-dpi pass)`
-                : det?.inferenceScale && det.inferenceScale !== 1 ? ` (model ran at ${det.trainDpi} dpi)` : ""}
+                : det?.inferenceScale && det.inferenceScale !== 1 ? ` (counted at ${det.trainDpi} dpi)` : ""}
             </span>
             <span className="sep">·</span>
             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>model {det?.modelVersion ?? "—"}</span>

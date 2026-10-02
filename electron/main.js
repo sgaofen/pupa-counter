@@ -757,18 +757,11 @@ ipcMain.handle("scanner:scan", async (_evt, params) => {
       ? macScan({ outPath, dpi: d, mode })
       : (() => { throw new Error("Scanning is not supported on this platform."); })();
 
-  // The model is trained on native 150-DPI scans. When a higher DPI is
-  // chosen we scan twice: a native 150-DPI pass that the model analyses,
-  // then the high-DPI pass that is displayed and saved. The daemon aligns the
-  // two and copies the detections onto the high-DPI image.
-  let analysis = null;
-  if (dpi > ANALYSIS_DPI + 2) {
-    const aPath = path.join(outDir, `scan_${stamp}_${ANALYSIS_DPI}dpi.png`);
-    const a = await doScan(aPath, ANALYSIS_DPI);
-    analysis = { path: a.path || aPath, width: a.width, height: a.height,
-                 actualDpi: a.actualDpi, dpiSource: a.dpiSource };
-  }
-  const outPath = path.join(outDir, analysis ? `scan_${stamp}_${dpi}dpi.png` : `scan_${stamp}.png`);
+  // One pass at the chosen DPI. The daemon shrinks 300 / 600 DPI images to
+  // the model's 150 DPI before counting and maps the dots back, so they always
+  // sit on the saved image (a separate 150-DPI pass was slower and its dots
+  // drifted whenever the sheet moved between passes).
+  const outPath = path.join(outDir, dpi > ANALYSIS_DPI + 2 ? `scan_${stamp}_${dpi}dpi.png` : `scan_${stamp}.png`);
   const res = await doScan(outPath, dpi);
   const out = {
     ok: true,
@@ -781,9 +774,7 @@ ipcMain.handle("scanner:scan", async (_evt, params) => {
     mode: res.mode || mode,
     warnings: res.warnings || [],
     backend: IS_WIN ? "wia" : "imagecapture",
-    analysis,
   };
-  if (analysis) console.log(`[scanner] analysis pass ${analysis.width}x${analysis.height} actual=${analysis.actualDpi}`);
   console.log(`[scanner] ${out.backend} ${out.width}x${out.height} requested=${dpi} actual=${out.actualDpi}`);
   return out;
 });

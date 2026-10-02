@@ -173,15 +173,14 @@ export function SettingsView({ onToast }: { onToast: (msg: string, tone?: ToastT
               <div>
                 <div className="sr-label">Scan resolution</div>
                 <div className="sr-hint">
-                  Counting always runs on a native {trainDpi} DPI scan (what the model was trained on). Choosing 300 or 600 DPI
-                  scans twice — {trainDpi} DPI for counting, then the higher resolution for the saved image — so counts stay
-                  comparable. Also available next to <b>New scan</b>.
+                  The model counts at {trainDpi} DPI (what it was trained on). At 300 or 600 DPI the scan is shrunk to {trainDpi} DPI
+                  for counting and the sharper image is saved; 600 DPI is much slower. Also available next to <b>New scan</b>.
                 </div>
               </div>
               <div className="sr-control">
                 <select className="select" value={dpi} onChange={(e) => setDpi(parseInt(e.target.value, 10))}>
                   {DPI_CHOICES.map((n) => (
-                    <option key={n} value={n}>{n} dpi{n === trainDpi ? " (model training resolution)" : " (two passes)"}</option>
+                    <option key={n} value={n}>{n} dpi{n === trainDpi ? " (model training resolution)" : " (shrunk to 150 for counting)"}</option>
                   ))}
                 </select>
               </div>
