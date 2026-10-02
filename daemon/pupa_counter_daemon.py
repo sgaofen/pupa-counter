@@ -240,7 +240,7 @@ def main() -> None:
     try:
         model_path = _resolve("PUPA_MODEL_PATH", HERE / "model" / MANIFEST["file"])
         clf_name = MANIFEST.get("classifier")
-        clf_path = (_resolve("PUPA_CLF_PATH", HERE / "model" / clf_name)
+        clf_path = (_resolve("PUPA_CLF_PATH", HERE / "model" / (clf_name or ""))
                     if clf_name or os.environ.get("PUPA_CLF_PATH") else None)
         if not model_path.exists():
             raise FileNotFoundError(f"model weights not found: {model_path}")

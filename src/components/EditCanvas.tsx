@@ -50,7 +50,6 @@ interface Props {
 const HIT_PX = 20;           // right-click delete radius in 150-DPI image pixels
 const DOT_SCREEN_RADIUS = 5; // on-screen dot radius
 const DRAG_PX = 4;           // screen px before a press counts as a drag
-const RING_ZOOM = 2.5;       // above this zoom dots turn into rings so the pupa stays visible
 
 type Drag =
   | { kind: "pending"; sx: number; sy: number; ox: number; oy: number }
@@ -243,8 +242,8 @@ export function EditCanvas({
   }, [pupae]);
 
   // Grab radius: a dot is easy to hit at any zoom.
-  // Image pixels per 150-DPI pixel: keeps hit areas and ring sizes the same
-  // physical size on 300 / 600 DPI scans.
+  // Image pixels per 150-DPI pixel: keeps hit areas the same physical size
+  // on 300 / 600 DPI scans.
   const dpiK = Math.max(1, imageWidth / 1240);
   const grabR = Math.max(6 * dpiK, 9 / zoom);
 
@@ -423,8 +422,6 @@ export function EditCanvas({
     ? pupae.map((q, i) => (i === drag.idx ? { ...q, x: drag.x, y: drag.y } : q))
     : pupae;
   const hoverIdx = hover && !drag ? nearestPupa(hover.x, hover.y, grabR) : -1;
-  const rings = zoom * dpiK >= RING_ZOOM;
-  const ringR = Math.max(7, Math.round(7 * imageWidth / 1240)); // ≈ half a pupa at any DPI (7 px at 150 DPI)
   const lowSheet = sheetNeedsCheck(sheet);
 
   let cursor = "crosshair";
@@ -516,7 +513,7 @@ export function EditCanvas({
           })()}
 
           {suspects.map((s, i) => (
-            <circle key={`s${i}`} cx={s.x} cy={s.y} r={Math.max(ringR, 8 / zoom)} fill="none"
+            <circle key={`s${i}`} cx={s.x} cy={s.y} r={8 / zoom} fill="none"
               stroke="#C77A1D" strokeWidth={1.4 / zoom} strokeDasharray={`${3 / zoom} ${2 / zoom}`} />
           ))}
 
@@ -526,25 +523,23 @@ export function EditCanvas({
             return (
               <g key={i + ":" + p.x + ":" + p.y}>
                 {top5?.has(i) && (
-                  <circle cx={p.x} cy={p.y} r={rings ? ringR + 2.5 * dpiK : DOT_SCREEN_RADIUS / zoom + 3.5 / zoom}
+                  <circle cx={p.x} cy={p.y} r={(DOT_SCREEN_RADIUS + 3.5) / zoom}
                     fill="none" stroke="#B4362E" strokeWidth={1.8 / zoom} />
                 )}
-                {rings ? (
-                  // Zoomed in: hollow ring + centre mark so the pupa itself stays visible.
-                  <>
-                    <circle cx={p.x} cy={p.y} r={ringR} fill={hot ? color : "none"} fillOpacity={0.18}
-                      stroke="white" strokeWidth={3 / zoom} opacity={0.7} />
-                    <circle cx={p.x} cy={p.y} r={ringR} fill="none" stroke={color} strokeWidth={1.6 / zoom} />
-                    <circle cx={p.x} cy={p.y} r={1.2 / zoom} fill={color} />
-                  </>
-                ) : (
-                  <circle cx={p.x} cy={p.y} r={(hot ? 1.3 : 1) * DOT_SCREEN_RADIUS / zoom}
-                    fill={color} stroke="white" strokeWidth={1.2 / zoom} />
-                )}
+                {/* Same small dot at every zoom: once zoomed in the pupa is far
+                    bigger than the dot, so it stays visible around it. */}
+                <circle cx={p.x} cy={p.y} r={(hot ? 1.3 : 1) * DOT_SCREEN_RADIUS / zoom}
+                  fill={color} stroke="white" strokeWidth={1.2 / zoom} />
               </g>
             );
           })}
         </svg>
+      </div>
+      <div className="edit-canvas-legend">
+        <span><i className="lg-dot" style={{ background: "#2BA557" }} />model</span>
+        <span><i className="lg-dot" style={{ background: "#1F5F6B" }} />added by hand</span>
+        {top5 && top5.size > 0 && <span><i className="lg-ring" />top 5 %</span>}
+        {suspects.length > 0 && <span><i className="lg-ring dashed" />possible miss — click to add</span>}
       </div>
       <div className="edit-canvas-hud">
         <span className="mono">zoom {(zoom * 100).toFixed(0)}%</span>

@@ -69,6 +69,14 @@ async function runTour(win, outDir) {
       await js(`window.__pupaDebug.load(${JSON.stringify(p)}, ${req ? JSON.stringify({ requestedDpi: +req, actualDpi: +act, analysisPath: ana || undefined }) : "null"})`);
       log.push({ [name]: await waitText(["Detection complete", "Detection failed"]) });
       await shot(`x-${name}-light`);
+      const zoomSteps = +(process.env.PUPA_TOUR_ZOOM || 0);
+      if (zoomSteps > 0) {
+        for (let i = 0; i < zoomSteps; i++) {
+          await js("window.dispatchEvent(new KeyboardEvent('keydown', { key: '+', bubbles: true }))");
+          await sleep(120);
+        }
+        await shot(`x-${name}-zoomed-light`);
+      }
     }
     if (await js("!!window.__pupaDebug.nudgeSheet")) {
       const r = await js("window.__pupaDebug.nudgeSheet()");

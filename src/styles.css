@@ -543,6 +543,21 @@ table.data td.muted { color: var(--muted); }
   color: var(--ink-2);
 }
 .edit-canvas-hud .sep { color: var(--muted-2); }
+.edit-canvas-legend {
+  position: absolute; top: 12px; left: 12px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 5px 10px;
+  font-size: 11.5px; color: var(--ink-2);
+  display: flex; align-items: center; gap: 12px;
+  backdrop-filter: blur(6px);
+  pointer-events: none;
+}
+[data-theme="dark"] .edit-canvas-legend { background: rgba(28, 29, 27, 0.88); }
+.edit-canvas-legend span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.edit-canvas-legend .lg-dot { width: 9px; height: 9px; border-radius: 50%; border: 1px solid #fff; box-shadow: 0 0 0 0.5px rgba(0,0,0,0.25); }
+.edit-canvas-legend .lg-ring { width: 11px; height: 11px; border-radius: 50%; border: 1.8px solid #B4362E; box-sizing: border-box; }
+.edit-canvas-legend .lg-ring.dashed { border: 1.4px dashed #C77A1D; }
 
 /* Manual-correct scan overlay (real image + svg dots) ----------------- */
 .scan-with-overlay {
