@@ -14,6 +14,8 @@ export interface ScanHandle {
   actualDpi?: number | null;
   dpiSource?: string | null;
   warnings?: string[];
+  /** Native 150-DPI pass scanned alongside a higher-DPI display scan. */
+  analysis?: { path: string; width: number; height: number; actualDpi: number | null } | null;
 }
 
 export class NoScannerError extends Error {
@@ -53,6 +55,7 @@ export async function scanNow(): Promise<ScanHandle | null> {
     actualDpi: result.actualDpi,
     dpiSource: result.dpiSource ?? "scanner",
     warnings: result.warnings ?? [],
+    analysis: result.analysis ?? null,
   };
 }
 

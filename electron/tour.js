@@ -65,8 +65,8 @@ async function runTour(win, outDir) {
     for (const spec of extra) {
       // spec = name=path[,requested,actual]
       const [name, rest] = spec.split("=");
-      const [p, req, act] = rest.split(",");
-      await js(`window.__pupaDebug.load(${JSON.stringify(p)}, ${req ? JSON.stringify({ requestedDpi: +req, actualDpi: +act }) : "null"})`);
+      const [p, req, act, ana] = rest.split(",");
+      await js(`window.__pupaDebug.load(${JSON.stringify(p)}, ${req ? JSON.stringify({ requestedDpi: +req, actualDpi: +act, analysisPath: ana || undefined }) : "null"})`);
       log.push({ [name]: await waitText(["Detection complete", "Detection failed"]) });
       await shot(`x-${name}-light`);
     }

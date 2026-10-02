@@ -46,6 +46,11 @@ const SESSIONS_DIR = () => path.join(USER_DATA(), "sessions");
 const SESSION_BACKUP_DIR = () => path.join(SESSIONS_DIR(), "_backup_before_v0.5");
 const LEGACY_SESSION_PATH = () => path.join(USER_DATA(), "session.json");
 const SCAN_OUT_DIR = () => path.join(USER_DATA(), "scans");
+// Where new scans land unless Settings → save directory overrides it. Kept in
+// Documents so the raw images are easy to find for labelling / training.
+const ANALYSIS_DPI = 150; // resolution the model is trained on
+const DEFAULT_SCAN_DIR = () =>
+  process.env.PUPA_SCAN_DIR || path.join(app.getPath("documents"), "Pupa Counter Scans");
 const DEFAULT_EXPORT_DIR = () =>
   process.env.PUPA_EXPORT_DIR || path.join(app.getPath("documents"), "Pupa Counter Exports");
 const TOUR = !!process.env.PUPA_TOUR;
@@ -67,6 +72,14 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
     },
+  });
+  // Mirror renderer warnings/errors and crashes into the main-process log
+  // (the macOS launcher writes it to ~/Library/Logs/PupaCounter/).
+  mainWindow.webContents.on("console-message", (_e, level, message, line, sourceId) => {
+    if (level >= 2) console.warn(`[renderer] ${message} (${sourceId}:${line})`);
+  });
+  mainWindow.webContents.on("render-process-gone", (_e, details) => {
+    console.error("[renderer] process gone:", JSON.stringify(details));
   });
 
   if (TOUR) mainWindow.showInactive();
@@ -316,7 +329,7 @@ ipcMain.handle("app:paths", async () => ({
   userData: USER_DATA(),
   sessions: SESSIONS_DIR(),
   sessionBackups: SESSION_BACKUP_DIR(),
-  scans: SCAN_OUT_DIR(),
+  scans: DEFAULT_SCAN_DIR(),
   exportsDefault: DEFAULT_EXPORT_DIR(),
   platform: process.platform,
   version: app.getVersion(),
@@ -479,7 +492,8 @@ async function cnnRequest(payload) {
 }
 
 ipcMain.handle("cnn:detect", async (_evt, imagePath, opts) =>
-  cnnRequest({ cmd: "detect", imagePath, dpi: opts?.dpi ?? null }));
+  cnnRequest({ cmd: "detect", imagePath, dpi: opts?.dpi ?? null,
+               analysisPath: opts?.analysisPath ?? null, analysisDpi: opts?.analysisDpi ?? null }));
 
 ipcMain.handle("cnn:info", async () => {
   try {
@@ -653,10 +667,10 @@ ipcMain.handle("scanner:listDevices", async () => {
 });
 
 ipcMain.handle("scanner:scan", async (_evt, params) => {
-  const { deviceId, dpi = 300, mode = "color", outDir: requestedDir } = params || {};
+  const { deviceId, dpi = 150, mode = "color", outDir: requestedDir } = params || {};
   if (IS_WIN && !deviceId) throw new Error("scanner:scan requires deviceId");
   const fallback = SCAN_OUT_DIR();
-  let outDir = requestedDir || fallback;
+  let outDir = requestedDir || DEFAULT_SCAN_DIR();
   try {
     await ensureDir(outDir);
   } catch (err) {
@@ -665,12 +679,25 @@ ipcMain.handle("scanner:scan", async (_evt, params) => {
     await ensureDir(outDir);
   }
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const outPath = path.join(outDir, `scan_${stamp}.png`);
-  const res = IS_WIN
-    ? await winScan({ deviceId, outPath, dpi, mode })
+  const doScan = (outPath, d) => IS_WIN
+    ? winScan({ deviceId, outPath, dpi: d, mode })
     : IS_MAC
-      ? await macScan({ outPath, dpi, mode })
+      ? macScan({ outPath, dpi: d, mode })
       : (() => { throw new Error("Scanning is not supported on this platform."); })();
+
+  // The model is trained on native 150-DPI scans. When a higher DPI is
+  // chosen we scan twice: a native 150-DPI pass that the model analyses,
+  // then the high-DPI pass that is displayed and saved. The daemon aligns the
+  // two and copies the detections onto the high-DPI image.
+  let analysis = null;
+  if (dpi > ANALYSIS_DPI + 2) {
+    const aPath = path.join(outDir, `scan_${stamp}_${ANALYSIS_DPI}dpi.png`);
+    const a = await doScan(aPath, ANALYSIS_DPI);
+    analysis = { path: a.path || aPath, width: a.width, height: a.height,
+                 actualDpi: a.actualDpi, dpiSource: a.dpiSource };
+  }
+  const outPath = path.join(outDir, analysis ? `scan_${stamp}_${dpi}dpi.png` : `scan_${stamp}.png`);
+  const res = await doScan(outPath, dpi);
   const out = {
     ok: true,
     path: res.path || outPath,
@@ -682,7 +709,9 @@ ipcMain.handle("scanner:scan", async (_evt, params) => {
     mode: res.mode || mode,
     warnings: res.warnings || [],
     backend: IS_WIN ? "wia" : "imagecapture",
+    analysis,
   };
+  if (analysis) console.log(`[scanner] analysis pass ${analysis.width}x${analysis.height} actual=${analysis.actualDpi}`);
   console.log(`[scanner] ${out.backend} ${out.width}x${out.height} requested=${dpi} actual=${out.actualDpi}`);
   return out;
 });

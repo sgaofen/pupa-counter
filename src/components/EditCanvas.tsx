@@ -213,7 +213,10 @@ export function EditCanvas({
   }, [pupae]);
 
   // Grab radius: a dot is easy to hit at any zoom.
-  const grabR = Math.max(6, 9 / zoom);
+  // Image pixels per 150-DPI pixel: keeps hit areas and ring sizes the same
+  // physical size on 300 / 600 DPI scans.
+  const dpiK = Math.max(1, imageWidth / 1240);
+  const grabR = Math.max(6 * dpiK, 9 / zoom);
 
   const corners: Corner[] | null = drag?.kind === "corner"
     ? drag.corners
@@ -384,8 +387,8 @@ export function EditCanvas({
     ? pupae.map((q, i) => (i === drag.idx ? { ...q, x: drag.x, y: drag.y } : q))
     : pupae;
   const hoverIdx = hover && !drag ? nearestPupa(hover.x, hover.y, grabR) : -1;
-  const rings = zoom >= RING_ZOOM;
-  const ringR = imageWidth > 2000 ? 14 : 7; // ≈ half a pupa at 300 / 150 DPI
+  const rings = zoom * dpiK >= RING_ZOOM;
+  const ringR = Math.max(7, Math.round(7 * imageWidth / 1240)); // ≈ half a pupa at any DPI (7 px at 150 DPI)
   const lowSheet = sheetNeedsCheck(sheet);
 
   let cursor = "crosshair";
@@ -477,7 +480,7 @@ export function EditCanvas({
           })()}
 
           {suspects.map((s, i) => (
-            <circle key={`s${i}`} cx={s.x} cy={s.y} r={Math.max(7, 8 / zoom)} fill="none"
+            <circle key={`s${i}`} cx={s.x} cy={s.y} r={Math.max(ringR, 8 / zoom)} fill="none"
               stroke="#C77A1D" strokeWidth={1.4 / zoom} strokeDasharray={`${3 / zoom} ${2 / zoom}`} />
           ))}
 

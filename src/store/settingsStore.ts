@@ -72,7 +72,7 @@ interface SettingsState {
 }
 
 const initialScanner: ScannerSettings = {
-  deviceId: "", dpi: 300, mode: "color",
+  deviceId: "", dpi: 150, mode: "color",
   ...read<Partial<ScannerSettings>>(K.scanner, {}),
 };
 const initialGenotypes = read<string[]>(K.genotypes, DEFAULT_GENOTYPES);

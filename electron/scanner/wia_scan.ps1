@@ -18,7 +18,7 @@
 param(
     [Parameter(Mandatory=$true)][string]$DeviceId,
     [Parameter(Mandatory=$true)][string]$OutPath,
-    [int]$Dpi = 300,
+    [int]$Dpi = 150,
     [ValidateSet("color","grayscale")][string]$Mode = "color"
 )
 $ErrorActionPreference = "Stop"

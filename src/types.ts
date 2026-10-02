@@ -78,6 +78,9 @@ export interface ScanRecord extends ScanMeta {
   inferenceScale?: number | null;
   modelVersion?: string | null;
   sheet?: SheetInfo | null;
+  /** Native 150-DPI scan the model analysed when the record image is a
+   *  higher-DPI scan (pupae were copied over after alignment). */
+  analysis?: AnalysisInfo | null;
   suspects?: Suspect[];
   cnnCount?: number;
 }
@@ -120,6 +123,7 @@ export interface DetectionResult {
   imageDpiSource: string | null;
   trainDpi: number | null;
   inferenceScale: number | null;
+  analysis?: AnalysisInfo | null;
   modelVersion: string;
   durationMs: number;
 }
@@ -148,6 +152,17 @@ export interface ScanParams {
   outDir?: string;
 }
 
+export interface AnalysisInfo {
+  path: string;
+  width: number;
+  height: number;
+  dpi?: number | null;
+  scale?: [number, number];
+  shiftPx?: [number, number];
+  alignResponse?: number;
+  warning?: string | null;
+}
+
 export interface ScanResult {
   ok: true;
   path: string;
@@ -159,6 +174,7 @@ export interface ScanResult {
   mode: "color" | "grayscale";
   warnings?: string[];
   backend?: string;
+  analysis?: { path: string; width: number; height: number; actualDpi: number | null } | null;
 }
 
 export interface CnnInfo {
@@ -212,7 +228,7 @@ declare global {
         pathForFile: (file: File) => string;
       };
       cnn: {
-        detect: (imagePath: string, opts?: { dpi?: number | null }) => Promise<any>;
+        detect: (imagePath: string, opts?: { dpi?: number | null; analysisPath?: string | null; analysisDpi?: number | null }) => Promise<any>;
         info: () => Promise<CnnInfo | null>;
       };
       scanner: {

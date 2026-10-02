@@ -304,8 +304,13 @@ def main() -> None:
             if cmd == "ping":
                 _respond({"id": rid, "ok": True, "result": "pong"})
             elif cmd == "detect":
-                result = detect(req["imagePath"], model, device, classifier,
-                                model_path.name, req.get("dpi"))
+                if req.get("analysisPath"):
+                    result = detect_pair(req["imagePath"], req["analysisPath"], model, device,
+                                         classifier, model_path.name, req.get("dpi"),
+                                         req.get("analysisDpi"))
+                else:
+                    result = detect(req["imagePath"], model, device, classifier,
+                                    model_path.name, req.get("dpi"))
                 _respond({"id": rid, "ok": True, "result": result})
             elif cmd == "export_xlsx":
                 _respond({"id": rid, "ok": True, "result": export_xlsx(req)})
@@ -479,6 +484,68 @@ def detect(image_path: str, model, device, classifier, model_name: str, dpi=None
         "yMin": counts["y_min_of_pupae"],
         "yMax": counts["y_max_of_pupae"],
     }
+
+
+def align_shift(analysis_bgr: np.ndarray, display_bgr: np.ndarray):
+    """Offset of the display scan relative to the analysis scan, measured on
+    the analysis pixel grid (phase correlation of the display image resized
+    to the analysis size). Two passes on a flatbed only differ by the
+    carriage start position, i.e. a small translation."""
+    ha, wa = analysis_bgr.shape[:2]
+    a = cv2.cvtColor(analysis_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    d = cv2.cvtColor(cv2.resize(display_bgr, (wa, ha), interpolation=cv2.INTER_AREA),
+                     cv2.COLOR_BGR2GRAY).astype(np.float32)
+    win = cv2.createHanningWindow((wa, ha), cv2.CV_32F)
+    (dx, dy), resp = cv2.phaseCorrelate(a, d, win)
+    return float(dx), float(dy), float(resp)
+
+
+def detect_pair(display_path: str, analysis_path: str, model, device, classifier,
+                model_name: str, dpi=None, analysis_dpi=None) -> dict:
+    """Detect on the native 150-DPI analysis scan, then copy the detections
+    onto the high-DPI display scan (aligned + scaled)."""
+    res = detect(analysis_path, model, device, classifier, model_name,
+                 analysis_dpi or TRAIN_DPI)
+    disp = cv2.imread(str(display_path), cv2.IMREAD_COLOR)
+    if disp is None:
+        raise FileNotFoundError(f"could not read image: {display_path}")
+    ana = cv2.imread(str(analysis_path), cv2.IMREAD_COLOR)
+    hd, wd = disp.shape[:2]
+    ha, wa = ana.shape[:2]
+    fx, fy = wd / wa, hd / ha
+    dx, dy, resp = align_shift(ana, disp)
+    warn = None
+    if resp < 0.05 or abs(dx) > 40 or abs(dy) > 40:
+        warn = f"alignment unreliable (shift {dx:.1f},{dy:.1f} px, response {resp:.3f}); assuming no shift"
+        dx = dy = 0.0
+
+    def m(x, y):
+        return (min(max((x + dx + 0.5) * fx - 0.5, 0), wd - 1),
+                min(max((y + dy + 0.5) * fy - 0.5, 0), hd - 1))
+
+    for p in res["pupae"]:
+        p["x"], p["y"] = (round(v, 1) for v in m(p["x"], p["y"]))
+    for p in res["suspects"]:
+        p["x"], p["y"] = (round(v, 1) for v in m(p["x"], p["y"]))
+    sh = res.get("sheet") or {}
+    if sh.get("corners"):
+        sh["corners"] = [[round(c, 1) for c in m(cx, cy)] for cx, cy in sh["corners"]]
+    for k in ("lengthPx", "widthPx"):
+        if isinstance(sh.get(k), (int, float)):
+            sh[k] = round(sh[k] * fx, 1)
+    if res.get("yMin") is not None:
+        res["yMin"] = round(m(0, res["yMin"])[1], 1)
+        res["yMax"] = round(m(0, res["yMax"])[1], 1)
+    disp_dpi, disp_src = resolve_dpi(Path(display_path), wd, hd, dpi)
+    res.update({
+        "imagePath": str(display_path), "imageWidth": wd, "imageHeight": hd,
+        "imageDpi": disp_dpi, "imageDpiSource": disp_src,
+        "analysis": {"path": str(analysis_path), "width": wa, "height": ha,
+                     "dpi": res.get("imageDpi"), "scale": [round(fx, 4), round(fy, 4)],
+                     "shiftPx": [round(dx, 2), round(dy, 2)], "alignResponse": round(resp, 3),
+                     "warning": warn},
+    })
+    return res
 
 
 def export_xlsx(req: dict) -> dict:

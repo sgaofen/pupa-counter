@@ -275,6 +275,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       inferenceScale: d.inferenceScale,
       modelVersion: d.modelVersion,
       sheet: pendingScan.sheet,
+      analysis: d.analysis ?? null,
       suspects: d.suspects,
     };
     set({

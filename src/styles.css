@@ -268,6 +268,9 @@ input, select, textarea { font-family: inherit; }
   border-top: 1px solid var(--hairline);
 }
 .status-strip .sep { color: var(--muted-2); }
+.status-strip { overflow: hidden; }
+.status-strip > span { white-space: nowrap; flex: none; }
+.status-strip > span:last-child { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 .middle-actions { display: flex; align-items: center; gap: 10px; }
 .middle-actions .spacer { flex: 1; }
@@ -310,7 +313,7 @@ input, select, textarea { font-family: inherit; }
   text-align: center; display: flex; flex-direction: column;
   gap: 8px; align-items: center;
 }
-.drop-zone svg { opacity: 0.6; }
+.drop-zone svg { opacity: 0.6; width: 56px; height: 56px; flex: none; }
 .drop-zone .primary { font-size: 13.5px; color: var(--ink-2); font-weight: 500; }
 .drop-zone .secondary { font-size: 11.5px; color: var(--muted-2); }
 

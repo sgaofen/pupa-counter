@@ -35,14 +35,19 @@ export function isMockModel(modelVersion?: string | null): boolean {
 
 export async function runDetection(
   imagePath: string,
-  opts: { dpi?: number | null; width?: number; height?: number } = {}
+  opts: { dpi?: number | null; width?: number; height?: number;
+          analysisPath?: string | null; analysisDpi?: number | null } = {}
 ): Promise<DetectionResult> {
   const inElectron = !!window.pupa?.cnn?.detect;
   if (inElectron && !mockEnabled()) {
     const t0 = performance.now();
     let raw: any;
     try {
-      raw = await window.pupa!.cnn.detect(imagePath, { dpi: opts.dpi ?? null });
+      raw = await window.pupa!.cnn.detect(imagePath, {
+        dpi: opts.dpi ?? null,
+        analysisPath: opts.analysisPath ?? null,
+        analysisDpi: opts.analysisDpi ?? null,
+      });
     } catch (err) {
       throw new CnnUnavailableError(
         `The counting engine failed: ${err instanceof Error ? err.message.replace(/^Error invoking remote method '[^']+': /, "") : String(err)}`,
@@ -62,6 +67,7 @@ export async function runDetection(
       imageDpiSource: raw.imageDpiSource ?? null,
       trainDpi: raw.trainDpi ?? null,
       inferenceScale: raw.inferenceScale ?? null,
+      analysis: raw.analysis ?? null,
       modelVersion: raw.modelVersion,
       durationMs: Math.round(performance.now() - t0),
     };

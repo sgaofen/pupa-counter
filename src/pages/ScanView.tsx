@@ -36,6 +36,8 @@ export function ScanView({ onNavigate, onToast }: Props) {
   const commitPendingScan = useSessionStore((s) => s.commitPendingScan);
   const startNewReplicate = useSessionStore((s) => s.startNewReplicate);
   const genotypes = useSettings((s) => s.genotypes);
+  const scanDpi = useSettings((s) => s.scanner.dpi);
+  const setScanner = useSettings((s) => s.setScanner);
 
   const [processing, setProcessing] = useState(false);
   const [scanning, setScanning] = useState(false);
@@ -108,7 +110,12 @@ export function ScanView({ onNavigate, onToast }: Props) {
     setProcessing(true);
     setDetectionError(null);
     try {
-      const detection = await runDetection(handle.path, { dpi: handle.actualDpi ?? null, width: handle.width, height: handle.height });
+      const detection = await runDetection(handle.path, {
+        dpi: handle.actualDpi ?? null, width: handle.width, height: handle.height,
+        analysisPath: handle.analysis?.path ?? null,
+        analysisDpi: handle.analysis?.actualDpi ?? null,
+      });
+      if (detection.analysis?.warning) onToast(`Two-pass scan: ${detection.analysis.warning}`, "warn");
       setDetection(detection);
       setOriginalCnn(detection.pupae);
       if (handle.warnings?.length) onToast(`Scanner: ${handle.warnings[0]}`, "warn");
@@ -196,6 +203,8 @@ export function ScanView({ onNavigate, onToast }: Props) {
         dpi: pendingScan.actualDpi,
         width: pendingScan.detection?.imageWidth,
         height: pendingScan.detection?.imageHeight,
+        analysisPath: pendingScan.detection?.analysis?.path ?? null,
+        analysisDpi: pendingScan.detection?.analysis?.dpi ?? null,
       });
       setDetection(d);
       setOriginalCnn(d.pupae);
@@ -248,9 +257,10 @@ export function ScanView({ onNavigate, onToast }: Props) {
   // Screenshot-tour hooks (electron/tour.js); harmless otherwise.
   useEffect(() => {
     window.__pupaDebug = {
-      load: async (p: string, dpi?: { requestedDpi: number; actualDpi: number } | null) => {
+      load: async (p: string, dpi?: { requestedDpi: number; actualDpi: number; analysisPath?: string } | null) => {
         const h = await loadScanFromPath(p);
-        if (h) await loadAndDetect({ ...h, ...(dpi ?? {}), dpiSource: dpi ? "simulated scanner" : undefined });
+        const analysis = dpi?.analysisPath ? { path: dpi.analysisPath, width: 0, height: 0, actualDpi: 150 } : null;
+        if (h) await loadAndDetect({ ...h, ...(dpi ?? {}), analysis, dpiSource: dpi ? "simulated scanner" : undefined });
       },
       nudgeSheet: () => {
         const p = useSessionStore.getState().pendingScan;
@@ -473,7 +483,9 @@ export function ScanView({ onNavigate, onToast }: Props) {
             <span className="sep">·</span>
             <span title={pendingScan?.dpiSource ? `DPI from ${pendingScan.dpiSource}` : undefined}>
               {pendingScan?.actualDpi ? `${pendingScan.actualDpi} dpi` : "— dpi"}
-              {det?.inferenceScale && det.inferenceScale !== 1 ? ` (model ran at ${det.trainDpi} dpi)` : ""}
+              {det?.analysis
+                ? ` (counted on a native ${det.analysis.dpi ?? 150}-dpi pass)`
+                : det?.inferenceScale && det.inferenceScale !== 1 ? ` (model ran at ${det.trainDpi} dpi)` : ""}
             </span>
             <span className="sep">·</span>
             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>model {det?.modelVersion ?? "—"}</span>
@@ -485,6 +497,14 @@ export function ScanView({ onNavigate, onToast }: Props) {
           <button className="btn" onClick={handleNewScan} disabled={busy} title="Trigger the connected scanner (Space)">
             {Icons.upload} New scan
           </button>
+          <select className="select" value={scanDpi} disabled={busy}
+            style={{ width: "auto", minWidth: 0, padding: "4px 26px 4px 10px" }}
+            title="Scan resolution. Detection always runs at the model's 150 DPI; higher DPI only makes the saved image sharper (for labelling / future models)."
+            onChange={(e) => setScanner({ dpi: parseInt(e.target.value, 10) })}>
+            {[150, 300, 600].map((n) => (
+              <option key={n} value={n}>{n} dpi{n === 150 ? " · model" : ""}</option>
+            ))}
+          </select>
           <button className="btn" onClick={handleLoadFromFile} disabled={busy} title="Pick an existing PNG/JPG from disk (⌘O)">
             {Icons.folder} Load file…
           </button>
