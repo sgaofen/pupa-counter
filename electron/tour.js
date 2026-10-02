@@ -85,6 +85,16 @@ async function runTour(win, outDir) {
       await sleep(2500);
     }
     await shot("x-database-exported-light");
+    if (process.env.PUPA_TOUR_DELETE) {
+      const before = await js("document.querySelectorAll('table.data tbody tr').length");
+      await js("(() => { window.confirm = () => true; const r = document.querySelectorAll('table.data tbody tr'); if (r.length) r[r.length - 1].click(); })()");
+      await sleep(500);
+      const clicked = await clickText("button", "delete scan");
+      await sleep(1500);
+      const after = await js("document.querySelectorAll('table.data tbody tr').length");
+      log.push({ deleteScan: { clicked, rowsBefore: before, rowsAfter: after } });
+      await shot("x-database-after-delete-light");
+    }
   }
 
   // ---- dark

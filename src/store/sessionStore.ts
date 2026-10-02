@@ -96,6 +96,8 @@ interface SessionState {
   setExperiment: (name: string) => void;
   toggleDark: () => void;
   startNewReplicate: () => void;
+  /** Remove a saved scan from the session (the image file is kept). */
+  deleteScan: (scanId: string) => ScanRecord | null;
   loadSession: (raw: unknown) => boolean;
 
   beginPendingScan: (imagePath: string, imageDataUrl: string | null, dpi?: ScanDpiInfo) => void;
@@ -139,6 +141,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     return true;
   },
 
+  deleteScan: (scanId) => {
+    const { session } = get();
+    let removed: ScanRecord | null = null;
+    const replicates = session.replicates.map((r) => {
+      const hit = r.scans.find((x) => x.id === scanId);
+      if (!hit) return r;
+      removed = hit;
+      return { ...r, scans: r.scans.filter((x) => x.id !== scanId) };
+    });
+    if (removed) set({ session: { ...session, replicates } });
+    return removed;
+  },
   startNewReplicate: () => {
     const { session } = get();
     const n = Math.max(0, ...session.replicates.map((r) => r.replicateNumber)) + 1;

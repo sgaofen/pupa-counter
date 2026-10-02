@@ -373,6 +373,11 @@ ipcMain.handle("file:readImageDataUrl", async (_evt, p) => {
   return `data:${mime};base64,${buf.toString("base64")}`;
 });
 
+// Dev/test-only UI flags (read synchronously by the preload).
+ipcMain.on("app:flags", (e) => {
+  e.returnValue = { demo: !!(process.env.PUPA_TOUR || process.env.PUPA_SHOW_DEMO) };
+});
+
 ipcMain.handle("file:exists", async (_evt, p) => {
   try { await fs.promises.access(p); return true; } catch { return false; }
 });

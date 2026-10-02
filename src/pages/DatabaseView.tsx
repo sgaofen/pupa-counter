@@ -277,6 +277,18 @@ export function DatabaseView({ onToast }: Props) {
                           if (await window.pupa.file.exists(selectedScan.imagePath)) window.pupa.shell.showItemInFolder(selectedScan.imagePath);
                           else onToast(`Image file not found: ${selectedScan.imagePath}`, "warn");
                         }}>show image</button>
+                      {" · "}
+                      <button className="link-btn" style={{ color: "var(--bad)" }}
+                        title="Remove this scan from the session (the image file stays on disk)"
+                        onClick={() => {
+                          const s = selectedScan;
+                          const label = `${s.id} · image ${s.imageNumber} (${s.pupae.length} pupae)`;
+                          if (!window.confirm(`Delete scan ${label} from this session?\n\nIts counts are removed from the totals and exports. The image file stays on disk.`)) return;
+                          if (useSessionStore.getState().deleteScan(s.id)) {
+                            setSelectedScanId(null);
+                            onToast(`Deleted scan ${label} — image file kept`, "warn");
+                          }
+                        }}>delete scan</button>
                     </>
                   : "Select a scan row to inspect every detected pupa"}
               </div>

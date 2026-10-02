@@ -40,6 +40,7 @@ contextBridge.exposeInMainWorld("pupa", {
     openPath: (p) => ipcRenderer.invoke("shell:openPath", p),
   },
   app: {
+    flags: (() => { try { return ipcRenderer.sendSync("app:flags") || {}; } catch { return {}; } })(),
     paths: () => ipcRenderer.invoke("app:paths"),
     onCloseRequested: (cb) => {
       const h = () => cb();

@@ -387,9 +387,11 @@ export function ScanView({ onNavigate, onToast }: Props) {
         }}>
           {Icons.plus} Start new replicate
         </button>
-        <button className="btn btn-ghost" style={{ justifyContent: "center", marginTop: 4 }} onClick={handleLoadDemo} disabled={busy}>
-          Load demo scan
-        </button>
+        {(window.pupa as any)?.app?.flags?.demo && (
+          <button className="btn btn-ghost" style={{ justifyContent: "center", marginTop: 4 }} onClick={handleLoadDemo} disabled={busy}>
+            Load demo scan
+          </button>
+        )}
         </>)}
       </aside>
 
